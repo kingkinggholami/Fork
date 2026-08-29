@@ -39,24 +39,33 @@ jobs:
 
           with sync_playwright() as p:
               browser = p.chromium.launch(headless=True)
-              page = browser.new_context(viewport={"width": 1280, "height": 800}).new_page()
+              context = browser.new_context(viewport={"width": 1280, "height": 800})
+              page = context.new_page()
               page.goto(url, wait_until="domcontentloaded", timeout=60000)
               page.wait_for_timeout(3000)
 
-              # کلیک و صبر برای navigation
-              try:
-                  with page.expect_navigation(timeout=10000):
-                      page.mouse.move(X, Y)
-                      page.mouse.down()
-                      page.mouse.up()
-              except:
-                  pass  # اگه navigate نشد ادامه بده
+              # گوش بده اگه تب جدید باز شد
+              with context.expect_page() as new_page_info:
+                  page.mouse.move(X, Y)
+                  page.mouse.down()
+                  page.mouse.up()
+                  page.wait_for_timeout(2000)
 
-              page.wait_for_timeout(3000)
-              page.screenshot(path="raw.png")
+              try:
+                  # تب جدید باز شد
+                  new_page = new_page_info.value
+                  new_page.wait_for_load_state("domcontentloaded", timeout=15000)
+                  new_page.wait_for_timeout(2000)
+                  new_page.screenshot(path="raw.png")
+                  print(f"✅ تب جدید: {new_page.url}")
+              except:
+                  # همون صفحه navigate شد
+                  page.wait_for_timeout(3000)
+                  page.screenshot(path="raw.png")
+                  print(f"✅ همون صفحه: {page.url}")
+
               browser.close()
 
-          # نقطه قرمز
           img = Image.open("raw.png")
           draw = ImageDraw.Draw(img)
           r = 10
