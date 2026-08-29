@@ -37,6 +37,7 @@ jobs:
 
           X1, Y1 = 700, 635
           X2, Y2 = 612, 776
+          X3, Y3 = 750, 155
 
           with sync_playwright() as p:
               browser = p.chromium.launch(headless=True)
@@ -62,12 +63,12 @@ jobs:
                   active_page = page
                   print(f"✅ همون صفحه: {active_page.url}")
 
-              # ۳ دقیقه صبر
-              print("⏳ صبر ۳ دقیقه...")
-              active_page.wait_for_timeout(180000)
+              # ۱ دقیقه صبر
+              print("⏳ صبر ۱ دقیقه...")
+              active_page.wait_for_timeout(60000)
 
               # کلیک دوم روی 612, 776
-              print("🖱️ کلیک دوم...")
+              print("🖱️ کلیک دوم 612, 776...")
               active_page.mouse.move(X2, Y2)
               active_page.mouse.down()
               active_page.mouse.up()
@@ -80,7 +81,17 @@ jobs:
               print("⌨️ تایپ cmd...")
               active_page.keyboard.type("cmd")
 
-              # ۱۰ ثانیه صبر بعد عکس
+              # ۱۰ ثانیه صبر
+              print("⏳ صبر ۱۰ ثانیه...")
+              active_page.wait_for_timeout(10000)
+
+              # کلیک سوم روی 750, 155
+              print("🖱️ کلیک سوم 750, 155...")
+              active_page.mouse.move(X3, Y3)
+              active_page.mouse.down()
+              active_page.mouse.up()
+
+              # ۱۰ ثانیه صبر
               print("⏳ صبر ۱۰ ثانیه...")
               active_page.wait_for_timeout(10000)
 
@@ -91,7 +102,7 @@ jobs:
           img = Image.open("raw.png")
           draw = ImageDraw.Draw(img)
           r = 10
-          draw.ellipse([X2 - r, Y2 - r, X2 + r, Y2 + r], fill="red", outline="white", width=2)
+          draw.ellipse([X3 - r, Y3 - r, X3 + r, Y3 + r], fill="red", outline="white", width=2)
           img.save("screenshot.png")
           print("✅ عکس ذخیره شد")
           EOF
