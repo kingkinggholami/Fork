@@ -43,22 +43,25 @@ jobs:
               page.goto(url, wait_until="domcontentloaded", timeout=60000)
               page.wait_for_timeout(3000)
 
-              page.mouse.move(X, Y)
-              page.mouse.down()
-              page.mouse.up()
-              page.evaluate(f"document.elementFromPoint({X}, {Y})?.click()")
-              page.wait_for_timeout(2000)
+              # کلیک و صبر برای navigation
+              try:
+                  with page.expect_navigation(timeout=10000):
+                      page.mouse.move(X, Y)
+                      page.mouse.down()
+                      page.mouse.up()
+              except:
+                  pass  # اگه navigate نشد ادامه بده
 
+              page.wait_for_timeout(3000)
               page.screenshot(path="raw.png")
               browser.close()
 
-          # رسم نقطه قرمز روی مختصات
+          # نقطه قرمز
           img = Image.open("raw.png")
           draw = ImageDraw.Draw(img)
-          r = 10  # شعاع نقطه
+          r = 10
           draw.ellipse([X - r, Y - r, X + r, Y + r], fill="red", outline="white", width=2)
           img.save("screenshot.png")
-          print(f"✅ نقطه قرمز روی {X}, {Y} رسم شد")
           EOF
 
       - uses: actions/upload-artifact@v4
