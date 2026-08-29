@@ -1,64 +1,43 @@
-name: Screenshot
+name: Click Automation
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
-    inputs:
-      url:
-        description: 'آدرس سایت (با یا بدون https://)'
-        required: true
-        default: 'https://example.com'
 
 jobs:
-  screenshot:
+  click:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Install dependencies
-        run: pip install selenium webdriver-manager
+      - uses: actions/checkout@v4
 
-      - name: Take screenshot
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install
         run: |
-          python3 - << 'EOF'
-          import time
-          from selenium import webdriver
-          from selenium.webdriver.chrome.options import Options
-          from selenium.webdriver.chrome.service import Service
-          from selenium.webdriver.common.action_chains import ActionChains
-          from webdriver_manager.chrome import ChromeDriverManager
+          pip install playwright
+          playwright install chromium
+          playwright install-deps chromium
 
-          url = "${{ github.event.inputs.url }}"
-          if not url.startswith("http"):
-              url = "https://" + url
+      - name: Run
+        run: |
+          python - << 'EOF'
+          from playwright.sync_api import sync_playwright
 
-          options = Options()
-          options.add_argument("--headless=new")
-          options.add_argument("--no-sandbox")
-          options.add_argument("--disable-dev-shm-usage")
-          options.add_argument("--window-size=1280,800")
-          options.add_argument("--disable-blink-features=AutomationControlled")
-          options.add_experimental_option("excludeSwitches", ["enable-automation"])
-
-          service = Service(ChromeDriverManager().install())
-          driver = webdriver.Chrome(service=service, options=options)
-
-          driver.get(url)
-          time.sleep(3)
-
-          # کلیک با مختصات مطلق
-          actions = ActionChains(driver)
-          actions.w3c_actions.pointer_action.move_to_location(700, 635)
-          actions.w3c_actions.pointer_action.click()
-          actions.perform()
-          print("✅ کلیک روی (700, 635) انجام شد")
-
-          time.sleep(5)
-          driver.save_screenshot("screenshot.png")
-          print("✅ screenshot saved")
-          driver.quit()
+          with sync_playwright() as p:
+              browser = p.chromium.launch(headless=True)
+              page = browser.new_context(viewport={"width": 1280, "height": 800}).new_page()
+              page.goto("https://github.com")
+              page.wait_for_load_state("networkidle")
+              page.mouse.click(700, 635)
+              page.screenshot(path="result.png")
+              browser.close()
           EOF
 
-      - name: Upload screenshot
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: screenshot
-          path: screenshot.png
+          path: result.png
