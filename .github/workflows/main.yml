@@ -13,43 +13,48 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Install Playwright
-        run: pip install playwright
-
-      - name: Install Chromium (headless shell only)
-        run: playwright install chromium --only-shell
+      - name: Install dependencies
+        run: pip install selenium webdriver-manager
 
       - name: Take screenshot
         run: |
           python3 - << 'EOF'
           import time
-          from playwright.sync_api import sync_playwright
+          from selenium import webdriver
+          from selenium.webdriver.chrome.options import Options
+          from selenium.webdriver.chrome.service import Service
+          from selenium.webdriver.common.action_chains import ActionChains
+          from webdriver_manager.chrome import ChromeDriverManager
 
           url = "${{ github.event.inputs.url }}"
           if not url.startswith("http"):
               url = "https://" + url
 
-          with sync_playwright() as p:
-              browser = p.chromium.launch(headless=True)
-              page = browser.new_page(viewport={"width": 1280, "height": 800})
-              page.goto(url, wait_until="domcontentloaded", timeout=60000)
-              time.sleep(3)
+          options = Options()
+          options.add_argument("--headless=new")
+          options.add_argument("--no-sandbox")
+          options.add_argument("--disable-dev-shm-usage")
+          options.add_argument("--window-size=1280,800")
+          options.add_argument("--disable-blink-features=AutomationControlled")
+          options.add_experimental_option("excludeSwitches", ["enable-automation"])
 
-              # کلیک از طریق JavaScript
-              clicked = page.evaluate("""([x, y]) => {
-                const el = document.elementFromPoint(x, y);
-                if (el) {
-                  el.click();
-                  return el.tagName + ' | ' + (el.innerText || el.value || '').slice(0, 50);
-                }
-                return 'nothing found at this point';
-              }""", [700, 635])
-              print(f"✅ کلیک روی: {clicked}")
+          service = Service(ChromeDriverManager().install())
+          driver = webdriver.Chrome(service=service, options=options)
 
-              time.sleep(5)
-              page.screenshot(path="screenshot.png")
-              print(f"✅ screenshot saved")
-              browser.close()
+          driver.get(url)
+          time.sleep(3)
+
+          # کلیک با مختصات مطلق
+          actions = ActionChains(driver)
+          actions.w3c_actions.pointer_action.move_to_location(700, 635)
+          actions.w3c_actions.pointer_action.click()
+          actions.perform()
+          print("✅ کلیک روی (700, 635) انجام شد")
+
+          time.sleep(5)
+          driver.save_screenshot("screenshot.png")
+          print("✅ screenshot saved")
+          driver.quit()
           EOF
 
       - name: Upload screenshot
