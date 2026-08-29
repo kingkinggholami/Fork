@@ -34,11 +34,21 @@ jobs:
               page = browser.new_page(viewport={"width": 1280, "height": 800})
               page.goto(url, wait_until="domcontentloaded", timeout=60000)
               time.sleep(3)
-              page.mouse.click(700, 635)
-              print("✅ کلیک روی (700, 635) انجام شد")
+
+              # کلیک از طریق JavaScript
+              clicked = page.evaluate("""([x, y]) => {
+                const el = document.elementFromPoint(x, y);
+                if (el) {
+                  el.click();
+                  return el.tagName + ' | ' + (el.innerText || el.value || '').slice(0, 50);
+                }
+                return 'nothing found at this point';
+              }""", [700, 635])
+              print(f"✅ کلیک روی: {clicked}")
+
               time.sleep(5)
               page.screenshot(path="screenshot.png")
-              print(f"✅ screenshot from {url} saved")
+              print(f"✅ screenshot saved")
               browser.close()
           EOF
 
