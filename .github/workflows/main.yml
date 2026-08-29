@@ -1,12 +1,15 @@
-name: Click Automation
+name: Screenshot
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
+    inputs:
+      url:
+        description: "آدرس سایت مورد نظر"
+        required: true
+        default: "google.com"
 
 jobs:
-  click:
+  screenshot:
     runs-on: ubuntu-latest
 
     steps:
@@ -27,17 +30,21 @@ jobs:
           python - << 'EOF'
           from playwright.sync_api import sync_playwright
 
+          url = "${{ github.event.inputs.url }}"
+          if not url.startswith("http"):
+              url = "https://" + url
+
           with sync_playwright() as p:
               browser = p.chromium.launch(headless=True)
               page = browser.new_context(viewport={"width": 1280, "height": 800}).new_page()
-              page.goto("https://github.com")
+              page.goto(url)
               page.wait_for_load_state("networkidle")
-              page.mouse.click(700, 635)
-              page.screenshot(path="result.png")
+              page.screenshot(path="screenshot.png")
+              print(f"✅ عکس از {url} گرفته شد")
               browser.close()
           EOF
 
       - uses: actions/upload-artifact@v4
         with:
           name: screenshot
-          path: result.png
+          path: screenshot.png
