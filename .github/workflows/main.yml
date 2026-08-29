@@ -39,8 +39,9 @@ jobs:
               page = browser.new_context(viewport={"width": 1280, "height": 800}).new_page()
               page.goto(url)
               page.wait_for_load_state("networkidle")
+              page.mouse.click(700, 635)
+              page.wait_for_timeout(2000)
               page.screenshot(path="screenshot.png")
-              print(f"✅ عکس از {url} گرفته شد")
               browser.close()
           EOF
 
