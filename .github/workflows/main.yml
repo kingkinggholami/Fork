@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       url:
-        description: 'apponfly.com'
+        description: 'آدرس سایت (با یا بدون https://)'
         required: true
         default: 'https://example.com'
 
@@ -24,12 +24,16 @@ jobs:
           python3 - << 'EOF'
           from playwright.sync_api import sync_playwright
 
+          url = "${{ github.event.inputs.url }}"
+          if not url.startswith("http"):
+              url = "https://" + url
+
           with sync_playwright() as p:
               browser = p.chromium.launch(headless=True)
               page = browser.new_page(viewport={"width": 1280, "height": 800})
-              page.goto("${{ github.event.inputs.url }}", wait_until="networkidle")
+              page.goto(url, wait_until="networkidle", timeout=30000)
               page.screenshot(path="screenshot.png", full_page=True)
-              print("✅ screenshot.png saved")
+              print(f"✅ screenshot from {url} saved")
               browser.close()
           EOF
 
@@ -38,4 +42,3 @@ jobs:
         with:
           name: screenshot
           path: screenshot.png
-
