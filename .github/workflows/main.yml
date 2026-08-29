@@ -21,7 +21,7 @@ jobs:
 
       - name: Install
         run: |
-          pip install playwright
+          pip install playwright pillow
           playwright install chromium
           playwright install-deps chromium
 
@@ -29,10 +29,13 @@ jobs:
         run: |
           python - << 'EOF'
           from playwright.sync_api import sync_playwright
+          from PIL import ImageDraw, Image
 
           url = "${{ github.event.inputs.url }}"
           if not url.startswith("http"):
               url = "https://" + url
+
+          X, Y = 700, 635
 
           with sync_playwright() as p:
               browser = p.chromium.launch(headless=True)
@@ -40,22 +43,22 @@ jobs:
               page.goto(url, wait_until="domcontentloaded", timeout=60000)
               page.wait_for_timeout(3000)
 
-              # کلیک با JavaScript مستقیم
-              page.evaluate("""
-                  const el = document.elementFromPoint(700, 635);
-                  if (el) {
-                      el.dispatchEvent(new MouseEvent('click', {
-                          bubbles: true,
-                          cancelable: true,
-                          clientX: 700,
-                          clientY: 635
-                      }));
-                  }
-              """)
-
+              page.mouse.move(X, Y)
+              page.mouse.down()
+              page.mouse.up()
+              page.evaluate(f"document.elementFromPoint({X}, {Y})?.click()")
               page.wait_for_timeout(2000)
-              page.screenshot(path="screenshot.png")
+
+              page.screenshot(path="raw.png")
               browser.close()
+
+          # رسم نقطه قرمز روی مختصات
+          img = Image.open("raw.png")
+          draw = ImageDraw.Draw(img)
+          r = 10  # شعاع نقطه
+          draw.ellipse([X - r, Y - r, X + r, Y + r], fill="red", outline="white", width=2)
+          img.save("screenshot.png")
+          print(f"✅ نقطه قرمز روی {X}, {Y} رسم شد")
           EOF
 
       - uses: actions/upload-artifact@v4
