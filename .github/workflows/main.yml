@@ -35,7 +35,8 @@ jobs:
           if not url.startswith("http"):
               url = "https://" + url
 
-          X, Y = 700, 635
+          X1, Y1 = 700, 635
+          X2, Y2 = 612, 776
 
           with sync_playwright() as p:
               browser = p.chromium.launch(headless=True)
@@ -45,36 +46,47 @@ jobs:
               page.goto(url, wait_until="domcontentloaded", timeout=60000)
               page.wait_for_timeout(3000)
 
+              # کلیک اول
               try:
                   with context.expect_page() as new_page_info:
-                      page.mouse.move(X, Y)
+                      page.mouse.move(X1, Y1)
                       page.mouse.down()
                       page.mouse.up()
                       page.wait_for_timeout(2000)
 
-                  new_page = new_page_info.value
-                  new_page.wait_for_load_state("domcontentloaded", timeout=15000)
-
-                  # ۳ دقیقه صبر
-                  print("⏳ صبر ۳ دقیقه...")
-                  new_page.wait_for_timeout(180000)
-                  new_page.screenshot(path="raw.png")
-                  print(f"✅ تب جدید: {new_page.url}")
+                  active_page = new_page_info.value
+                  active_page.wait_for_load_state("domcontentloaded", timeout=15000)
+                  print(f"✅ تب جدید: {active_page.url}")
 
               except:
-                  print("⏳ صبر ۳ دقیقه...")
-                  page.wait_for_timeout(180000)
-                  page.screenshot(path="raw.png")
-                  print(f"✅ همون صفحه: {page.url}")
+                  active_page = page
+                  print(f"✅ همون صفحه: {active_page.url}")
 
+              # ۳ دقیقه صبر
+              print("⏳ صبر ۳ دقیقه...")
+              active_page.wait_for_timeout(180000)
+
+              # کلیک دوم روی 612, 776
+              print("🖱️ کلیک دوم...")
+              active_page.mouse.move(X2, Y2)
+              active_page.mouse.down()
+              active_page.mouse.up()
+
+              # ۱ دقیقه صبر
+              print("⏳ صبر ۱ دقیقه...")
+              active_page.wait_for_timeout(60000)
+
+              active_page.screenshot(path="raw.png")
               context.close()
               browser.close()
 
+          # نقطه قرمز روی کلیک دوم
           img = Image.open("raw.png")
           draw = ImageDraw.Draw(img)
           r = 10
-          draw.ellipse([X - r, Y - r, X + r, Y + r], fill="red", outline="white", width=2)
+          draw.ellipse([X2 - r, Y2 - r, X2 + r, Y2 + r], fill="red", outline="white", width=2)
           img.save("screenshot.png")
+          print("✅ عکس ذخیره شد")
           EOF
 
       - name: Upload Screenshot
