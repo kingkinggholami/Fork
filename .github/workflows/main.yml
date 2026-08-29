@@ -39,7 +39,20 @@ jobs:
               page = browser.new_context(viewport={"width": 1280, "height": 800}).new_page()
               page.goto(url, wait_until="domcontentloaded", timeout=60000)
               page.wait_for_timeout(3000)
-              page.mouse.click(700, 635)
+
+              # کلیک با JavaScript مستقیم
+              page.evaluate("""
+                  const el = document.elementFromPoint(700, 635);
+                  if (el) {
+                      el.dispatchEvent(new MouseEvent('click', {
+                          bubbles: true,
+                          cancelable: true,
+                          clientX: 700,
+                          clientY: 635
+                      }));
+                  }
+              """)
+
               page.wait_for_timeout(2000)
               page.screenshot(path="screenshot.png")
               browser.close()
