@@ -101,6 +101,10 @@ jobs:
               print("⌨️ تایپ دستور powershell...")
               active_page.keyboard.type(CMD)
 
+              # ۱۰ ثانیه صبر بعد عکس
+              print("⏳ صبر ۱۰ ثانیه بعد از تایپ...")
+              active_page.wait_for_timeout(10000)
+
               active_page.screenshot(path="raw.png")
               context.close()
               browser.close()
