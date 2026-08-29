@@ -76,11 +76,18 @@ jobs:
               print("⏳ صبر ۱ دقیقه...")
               active_page.wait_for_timeout(60000)
 
+              # تایپ cmd
+              print("⌨️ تایپ cmd...")
+              active_page.keyboard.type("cmd")
+
+              # ۱۰ ثانیه صبر بعد عکس
+              print("⏳ صبر ۱۰ ثانیه...")
+              active_page.wait_for_timeout(10000)
+
               active_page.screenshot(path="raw.png")
               context.close()
               browser.close()
 
-          # نقطه قرمز روی کلیک دوم
           img = Image.open("raw.png")
           draw = ImageDraw.Draw(img)
           r = 10
