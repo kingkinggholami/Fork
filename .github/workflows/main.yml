@@ -22,6 +22,7 @@ jobs:
       - name: Take screenshot
         run: |
           python3 - << 'EOF'
+          import time
           from playwright.sync_api import sync_playwright
 
           url = "${{ github.event.inputs.url }}"
@@ -31,7 +32,8 @@ jobs:
           with sync_playwright() as p:
               browser = p.chromium.launch(headless=True)
               page = browser.new_page(viewport={"width": 1280, "height": 800})
-              page.goto(url, wait_until="networkidle", timeout=30000)
+              page.goto(url, wait_until="domcontentloaded", timeout=60000)
+              time.sleep(3)  # کمی صبر تا محتوای داینامیک لود بشه
               page.screenshot(path="screenshot.png", full_page=True)
               print(f"✅ screenshot from {url} saved")
               browser.close()
@@ -42,3 +44,4 @@ jobs:
         with:
           name: screenshot
           path: screenshot.png
+
