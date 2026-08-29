@@ -1,5 +1,5 @@
 name: Screenshot
-
+ 
 on:
   workflow_dispatch:
     inputs:
@@ -7,38 +7,38 @@ on:
         description: 'آدرس سایت (با یا بدون https://)'
         required: true
         default: 'https://example.com'
-
+ 
 jobs:
   screenshot:
     runs-on: ubuntu-latest
-
+ 
     steps:
       - name: Install Playwright
         run: pip install playwright
-
+ 
       - name: Install Chromium (headless shell only)
         run: playwright install chromium --only-shell
-
+ 
       - name: Take screenshot
         run: |
           python3 - << 'EOF'
           import time
           from playwright.sync_api import sync_playwright
-
+ 
           url = "${{ github.event.inputs.url }}"
           if not url.startswith("http"):
               url = "https://" + url
-
+ 
           with sync_playwright() as p:
               browser = p.chromium.launch(headless=True)
               page = browser.new_page(viewport={"width": 1280, "height": 800})
               page.goto(url, wait_until="domcontentloaded", timeout=60000)
-              time.sleep(3)  # کمی صبر تا محتوای داینامیک لود بشه
-              page.screenshot(path="screenshot.png", full_page=True)
+              time.sleep(3)
+              page.screenshot(path="screenshot.png")
               print(f"✅ screenshot from {url} saved")
               browser.close()
           EOF
-
+ 
       - name: Upload screenshot
         uses: actions/upload-artifact@v4
         with:
