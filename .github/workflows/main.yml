@@ -1,4 +1,4 @@
-name: Screenshot + Video
+name: Screenshot
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
       url:
         description: "آدرس سایت مورد نظر"
         required: true
-        default: "apponfly.com"
+        default: "google.com"
 
 jobs:
   screenshot:
@@ -30,7 +30,6 @@ jobs:
           python - << 'EOF'
           from playwright.sync_api import sync_playwright
           from PIL import ImageDraw, Image
-          import os
 
           url = "${{ github.event.inputs.url }}"
           if not url.startswith("http"):
@@ -40,21 +39,12 @@ jobs:
 
           with sync_playwright() as p:
               browser = p.chromium.launch(headless=True)
-
-              # ویدیو از همون اول شروع میشه
-              context = browser.new_context(
-                  viewport={"width": 1280, "height": 800},
-                  record_video_dir="videos/",
-                  record_video_size={"width": 1280, "height": 800}
-              )
-
+              context = browser.new_context(viewport={"width": 1280, "height": 800})
               page = context.new_page()
 
-              # لود صفحه اول
               page.goto(url, wait_until="domcontentloaded", timeout=60000)
               page.wait_for_timeout(3000)
 
-              # کلیک
               try:
                   with context.expect_page() as new_page_info:
                       page.mouse.move(X, Y)
@@ -65,33 +55,26 @@ jobs:
                   new_page = new_page_info.value
                   new_page.wait_for_load_state("domcontentloaded", timeout=15000)
 
-                  # ۱۰ ثانیه صبر
-                  new_page.wait_for_timeout(10000)
+                  # ۳ دقیقه صبر
+                  print("⏳ صبر ۳ دقیقه...")
+                  new_page.wait_for_timeout(180000)
                   new_page.screenshot(path="raw.png")
                   print(f"✅ تب جدید: {new_page.url}")
 
               except:
-                  page.wait_for_timeout(10000)
+                  print("⏳ صبر ۳ دقیقه...")
+                  page.wait_for_timeout(180000)
                   page.screenshot(path="raw.png")
                   print(f"✅ همون صفحه: {page.url}")
 
-              # اینجا context بسته میشه = ویدیو کامل ذخیره میشه
               context.close()
               browser.close()
 
-          # نقطه قرمز
           img = Image.open("raw.png")
           draw = ImageDraw.Draw(img)
           r = 10
           draw.ellipse([X - r, Y - r, X + r, Y + r], fill="red", outline="white", width=2)
           img.save("screenshot.png")
-
-          # rename ویدیو
-          for f in os.listdir("videos/"):
-              if f.endswith(".webm"):
-                  os.rename(f"videos/{f}", "video.webm")
-                  print("✅ ویدیو ذخیره شد")
-                  break
           EOF
 
       - name: Upload Screenshot
@@ -99,9 +82,3 @@ jobs:
         with:
           name: screenshot
           path: screenshot.png
-
-      - name: Upload Video
-        uses: actions/upload-artifact@v4
-        with:
-          name: video
-          path: video.webm
