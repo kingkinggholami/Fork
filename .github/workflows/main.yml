@@ -13,109 +13,218 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install
+      - name: Install dependencies
         run: |
+          python -m pip install --upgrade pip
           pip install playwright pillow
           playwright install chromium
           playwright install-deps chromium
 
-      - name: Run
+      - name: Run browser automation
         run: |
-          python - << 'EOF'
+          python - <<'PY'
+          import os
           from playwright.sync_api import sync_playwright
           from PIL import ImageDraw, Image
 
           url = "${{ github.event.inputs.url }}"
-          if not url.startswith("http"):
+
+          if not url.startswith(("http://", "https://")):
               url = "https://" + url
 
           X1, Y1 = 700, 635
           X2, Y2 = 612, 776
           X3, Y3 = 750, 155
 
-          CMD = """powershell -Command "Start-Process msedge 'https://h2.nexus/cli'; Start-Sleep -Seconds 3; Add-Type -AssemblyName System.Windows.Forms; Add-Type -MemberDefinition '[DllImport(\"user32.dll\")] public static extern void mouse_event(int flags, int dx, int dy, int buttons, int extraInfo); [DllImport(\"user32.dll\")] public static extern bool SetCursorPos(int x, int y);' -Name WinAPI -Namespace System; [System.Windows.Forms.SendKeys]::SendWait('{PGDN}'); Start-Sleep -Seconds 5; [System.WinAPI]::SetCursorPos(921, 226); [System.WinAPI]::mouse_event(6, 0, 0, 0, 0); Start-Sleep -Seconds 5; [System.WinAPI]::SetCursorPos(823, 239); [System.WinAPI]::mouse_event(6, 0, 0, 0, 0); Start-Sleep -Seconds 5; [System.WinAPI]::SetCursorPos(823, 239); [System.WinAPI]::mouse_event(6, 0, 0, 0, 0); Start-Sleep -Seconds 3; [System.Windows.Forms.SendKeys]::SendWait('curl -s -X POST https://api.telegram.org/bot8891199634:AAH5SjPfM5jDu_suirPb1gvxzbnqwD7VmFg/sendMessage')" """
+          # ==========================================
+          # توکن و Chat ID را اینجا قرار بده
+          # ==========================================
+          bot_token = "توکن_بات_را_اینجا_بگذار"
+          chat_id = "چت_آیدی_را_اینجا_بگذار"
+
+          CMD = (
+              "powershell -Command "
+              "\"Start-Process msedge 'https://h2.nexus/cli'; "
+              "Start-Sleep -Seconds 3; "
+              "Add-Type -AssemblyName System.Windows.Forms; "
+              "Add-Type -MemberDefinition "
+              "'[DllImport(\\\"user32.dll\\\")] public static extern void mouse_event(int flags, int dx, int dy, int buttons, int extraInfo); "
+              "[DllImport(\\\"user32.dll\\\")] public static extern bool SetCursorPos(int x, int y);' "
+              "-Name WinAPI -Namespace System; "
+              "[System.Windows.Forms.SendKeys]::SendWait('{PGDN}'); "
+              "Start-Sleep -Seconds 5; "
+              "[System.WinAPI]::SetCursorPos(921, 226); "
+              "[System.WinAPI]::mouse_event(6, 0, 0, 0, 0); "
+              "Start-Sleep -Seconds 5; "
+              "[System.WinAPI]::SetCursorPos(823, 239); "
+              "[System.WinAPI]::mouse_event(6, 0, 0, 0, 0); "
+              "Start-Sleep -Seconds 5; "
+              "[System.WinAPI]::SetCursorPos(823, 239); "
+              "[System.WinAPI]::mouse_event(6, 0, 0, 0, 0); "
+              "Start-Sleep -Seconds 3; "
+              "[System.Windows.Forms.SendKeys]::SendWait("
+              "'curl -s -X POST https://api.telegram.org/bot"
+              + bot_token
+              + "/sendMessage -d ''chat_id="
+              + chat_id
+              + "&text=Server is Running'''"
+              ")\""
+          )
 
           with sync_playwright() as p:
-              browser = p.chromium.launch(headless=True)
-              context = browser.new_context(viewport={"width": 1280, "height": 800})
+              browser = p.chromium.launch(
+                  headless=True
+              )
+
+              context = browser.new_context(
+                  viewport={
+                      "width": 1280,
+                      "height": 800
+                  }
+              )
+
               page = context.new_page()
 
-              page.goto(url, wait_until="domcontentloaded", timeout=60000)
+              print(f"🌐 Opening: {url}")
+
+              page.goto(
+                  url,
+                  wait_until="domcontentloaded",
+                  timeout=60000
+              )
+
               page.wait_for_timeout(3000)
 
+              # -------------------------
               # کلیک اول
+              # -------------------------
+              print(f"🖱️ کلیک اول: {X1}, {Y1}")
+
               try:
-                  with context.expect_page() as new_page_info:
-                      page.mouse.move(X1, Y1)
-                      page.mouse.down()
-                      page.mouse.up()
-                      page.wait_for_timeout(2000)
+                  with context.expect_page(timeout=5000) as new_page_info:
+                      page.mouse.click(X1, Y1)
 
                   active_page = new_page_info.value
-                  active_page.wait_for_load_state("domcontentloaded", timeout=15000)
+
+                  active_page.wait_for_load_state(
+                      "domcontentloaded",
+                      timeout=15000
+                  )
+
                   print(f"✅ تب جدید: {active_page.url}")
 
-              except:
+              except Exception:
                   active_page = page
-                  print(f"✅ همون صفحه: {active_page.url}")
+                  print(f"✅ همان صفحه: {active_page.url}")
 
-              # ۱ دقیقه صبر
+              # -------------------------
+              # یک دقیقه صبر
+              # -------------------------
               print("⏳ صبر ۱ دقیقه...")
               active_page.wait_for_timeout(60000)
 
+              # -------------------------
               # کلیک دوم
-              print("🖱️ کلیک دوم 612, 776...")
+              # -------------------------
+              print(f"🖱️ کلیک دوم: {X2}, {Y2}")
+
               active_page.mouse.move(X2, Y2)
               active_page.mouse.down()
               active_page.mouse.up()
 
-              # ۱ دقیقه صبر
+              # -------------------------
+              # یک دقیقه صبر
+              # -------------------------
               print("⏳ صبر ۱ دقیقه...")
               active_page.wait_for_timeout(60000)
 
+              # -------------------------
               # تایپ cmd
+              # -------------------------
               print("⌨️ تایپ cmd...")
-              active_page.keyboard.type("cmd")
 
-              # ۱۰ ثانیه صبر
+              active_page.keyboard.type(
+                  "cmd",
+                  delay=20
+              )
+
               print("⏳ صبر ۱۰ ثانیه...")
               active_page.wait_for_timeout(10000)
 
+              # -------------------------
               # کلیک سوم
-              print("🖱️ کلیک سوم 750, 155...")
+              # -------------------------
+              print(f"🖱️ کلیک سوم: {X3}, {Y3}")
+
               active_page.mouse.move(X3, Y3)
               active_page.mouse.down()
               active_page.mouse.up()
 
-              # ۱۰ ثانیه صبر
               print("⏳ صبر ۱۰ ثانیه...")
               active_page.wait_for_timeout(10000)
 
-              # تایپ دستور powershell - بدون enter
-              print("⌨️ تایپ دستور powershell...")
-              active_page.keyboard.type(CMD)
+              # -------------------------
+              # تایپ دستور PowerShell
+              # بدون Enter
+              # -------------------------
+              print("⌨️ تایپ دستور PowerShell...")
 
-              # ۱۰ ثانیه صبر بعد عکس
-              print("⏳ صبر ۱۰ ثانیه بعد از تایپ...")
+              active_page.keyboard.type(
+                  CMD,
+                  delay=1
+              )
+
+              print("✅ دستور تایپ شد؛ Enter ارسال نمی‌شود.")
+
+              # -------------------------
+              # صبر قبل از screenshot
+              # -------------------------
+              print("⏳ صبر ۱۰ ثانیه...")
               active_page.wait_for_timeout(10000)
 
-              active_page.screenshot(path="raw.png")
+              # -------------------------
+              # Screenshot
+              # -------------------------
+              active_page.screenshot(
+                  path="raw.png",
+                  full_page=False
+              )
+
               context.close()
               browser.close()
 
+          # -------------------------
+          # اضافه کردن علامت محل کلیک
+          # -------------------------
           img = Image.open("raw.png")
           draw = ImageDraw.Draw(img)
+
           r = 10
-          draw.ellipse([X3 - r, Y3 - r, X3 + r, Y3 + r], fill="red", outline="white", width=2)
+
+          draw.ellipse(
+              [
+                  X3 - r,
+                  Y3 - r,
+                  X3 + r,
+                  Y3 + r
+              ],
+              fill="red",
+              outline="white",
+              width=2
+          )
+
           img.save("screenshot.png")
-          print("✅ عکس ذخیره شد")
-          EOF
+
+          print("✅ عکس ذخیره شد: screenshot.png")
+          PY
 
       - name: Upload Screenshot
         uses: actions/upload-artifact@v4
