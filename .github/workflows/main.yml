@@ -173,7 +173,6 @@ jobs:
 
               # -------------------------
               # تایپ دستور PowerShell
-              # بدون Enter
               # -------------------------
               print("⌨️ تایپ دستور PowerShell...")
 
@@ -182,17 +181,28 @@ jobs:
                   delay=1
               )
 
-              print("✅ دستور تایپ شد؛ Enter ارسال نمی‌شود.")
+              print("✅ دستور تایپ شد.")
 
               # -------------------------
-              # صبر قبل از screenshot
+              # ۵ ثانیه بعد Enter
               # -------------------------
-              print("⏳ صبر ۱۰ ثانیه...")
-              active_page.wait_for_timeout(10000)
+              print("⏳ صبر ۵ ثانیه قبل از Enter...")
+
+              active_page.wait_for_timeout(5000)
+
+              print("⏎ ارسال Enter...")
+
+              active_page.keyboard.press("Enter")
 
               # -------------------------
-              # Screenshot
+              # ۴ دقیقه بعد Screenshot
               # -------------------------
+              print("⏳ صبر ۴ دقیقه بعد از Enter...")
+
+              active_page.wait_for_timeout(240000)
+
+              print("📸 گرفتن Screenshot...")
+
               active_page.screenshot(
                   path="raw.png",
                   full_page=False
