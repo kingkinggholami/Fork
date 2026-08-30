@@ -58,7 +58,7 @@ jobs:
               "-Name WinAPI -Namespace System; "
               "[System.Windows.Forms.SendKeys]::SendWait('{PGDN}'); "
               "Start-Sleep -Seconds 5; "
-              "[System.WinAPI]::SetCursorPos(921, 226); "
+              "[System.WinAPI]::SetCursorPos(639, 339); "
               "[System.WinAPI]::mouse_event(6, 0, 0, 0, 0); "
               "Start-Sleep -Seconds 5; "
               "[System.WinAPI]::SetCursorPos(823, 239); "
