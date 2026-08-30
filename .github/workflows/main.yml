@@ -1,3 +1,4 @@
+```yaml
 name: Screenshot
 
 on:
@@ -36,7 +37,6 @@ jobs:
           from PIL import ImageDraw, Image
 
           url = "${{ github.event.inputs.url }}"
-
           if not url.startswith(("http://", "https://")):
               url = "https://" + url
 
@@ -49,7 +49,6 @@ jobs:
           # ==========================================
           bot_token = "توکن_بات_را_اینجا_بگذار"
           chat_id = "چت_آیدی_را_اینجا_بگذار"
-
           CMD = (
               "powershell -Command "
               "\"Start-Process msedge 'https://h2.nexus/cli'; "
@@ -78,7 +77,6 @@ jobs:
               + "&text=Server is Running'''"
               ")\""
           )
-
           with sync_playwright() as p:
               browser = p.chromium.launch(
                   headless=True
@@ -87,14 +85,13 @@ jobs:
               context = browser.new_context(
                   viewport={
                       "width": 1280,
-                      "height": 800
+                      "height": 720
                   }
               )
 
               page = context.new_page()
 
               print(f"🌐 Opening: {url}")
-
               page.goto(
                   url,
                   wait_until="domcontentloaded",
@@ -111,7 +108,6 @@ jobs:
               try:
                   with context.expect_page(timeout=5000) as new_page_info:
                       page.mouse.click(X1, Y1)
-
                   active_page = new_page_info.value
 
                   active_page.wait_for_load_state(
@@ -124,7 +120,6 @@ jobs:
               except Exception:
                   active_page = page
                   print(f"✅ همان صفحه: {active_page.url}")
-
               # -------------------------
               # یک دقیقه صبر
               # -------------------------
@@ -139,7 +134,6 @@ jobs:
               active_page.mouse.move(X2, Y2)
               active_page.mouse.down()
               active_page.mouse.up()
-
               # -------------------------
               # یک دقیقه صبر
               # -------------------------
@@ -155,7 +149,6 @@ jobs:
                   "cmd",
                   delay=20
               )
-
               print("⏳ صبر ۱۰ ثانیه...")
               active_page.wait_for_timeout(10000)
 
@@ -170,7 +163,6 @@ jobs:
 
               print("⏳ صبر ۱۰ ثانیه...")
               active_page.wait_for_timeout(10000)
-
               # -------------------------
               # تایپ دستور PowerShell
               # -------------------------
@@ -187,7 +179,6 @@ jobs:
               # ۵ ثانیه بعد Enter
               # -------------------------
               print("⏳ صبر ۵ ثانیه قبل از Enter...")
-
               active_page.wait_for_timeout(5000)
 
               print("⏎ ارسال Enter...")
@@ -202,7 +193,6 @@ jobs:
               active_page.wait_for_timeout(240000)
 
               print("📸 گرفتن Screenshot...")
-
               active_page.screenshot(
                   path="raw.png",
                   full_page=False
@@ -218,7 +208,6 @@ jobs:
           draw = ImageDraw.Draw(img)
 
           r = 10
-
           draw.ellipse(
               [
                   X3 - r,
