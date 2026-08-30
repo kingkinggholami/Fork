@@ -20,7 +20,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -84,7 +83,7 @@ jobs:
               context = browser.new_context(
                   viewport={
                       "width": 1280,
-                      "height": 720
+                      "height": 800
                   }
               )
 
@@ -119,6 +118,7 @@ jobs:
               except Exception:
                   active_page = page
                   print(f"✅ همان صفحه: {active_page.url}")
+
               # -------------------------
               # یک دقیقه صبر
               # -------------------------
@@ -133,6 +133,7 @@ jobs:
               active_page.mouse.move(X2, Y2)
               active_page.mouse.down()
               active_page.mouse.up()
+
               # -------------------------
               # یک دقیقه صبر
               # -------------------------
@@ -148,6 +149,7 @@ jobs:
                   "cmd",
                   delay=20
               )
+
               print("⏳ صبر ۱۰ ثانیه...")
               active_page.wait_for_timeout(10000)
 
@@ -162,6 +164,7 @@ jobs:
 
               print("⏳ صبر ۱۰ ثانیه...")
               active_page.wait_for_timeout(10000)
+
               # -------------------------
               # تایپ دستور PowerShell
               # -------------------------
@@ -183,6 +186,18 @@ jobs:
               print("⏎ ارسال Enter...")
 
               active_page.keyboard.press("Enter")
+
+              # -------------------------
+              # تغییر فوری رزولوشن به 1280x720
+              # -------------------------
+              print("🖥️ تغییر رزولوشن به 1280x720...")
+
+              active_page.set_viewport_size({
+                  "width": 1280,
+                  "height": 720
+              })
+
+              print("✅ رزولوشن تغییر کرد.")
 
               # -------------------------
               # ۴ دقیقه بعد Screenshot
