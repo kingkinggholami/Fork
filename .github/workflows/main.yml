@@ -25,12 +25,12 @@ jobs:
           set -e
 
           docker rm -f chromium 2>/dev/null || true
-
-          docker pull jlesage/chromium:latest
+          docker rm -f cdp-proxy 2>/dev/null || true
 
           docker run -d \
             --name chromium \
             --restart unless-stopped \
+            --shm-size=2g \
             -e VNC_PASSWORD=your_password \
             -e DISPLAY_WIDTH=1280 \
             -e DISPLAY_HEIGHT=720 \
@@ -38,7 +38,7 @@ jobs:
             -p 9222:9222 \
             jlesage/chromium:latest
 
-          echo "Chromium container started"
+          echo "✅ Chromium started"
 
       # ==========================================================
       # 2. Wait for noVNC
@@ -51,20 +51,22 @@ jobs:
           echo "⏳ منتظر noVNC..."
 
           for i in {1..60}; do
-            if curl -fsS http://127.0.0.1:5800/ >/dev/null 2>&1; then
+            if curl -fsS \
+              --max-time 5 \
+              http://127.0.0.1:5800/ \
+              >/dev/null 2>&1; then
+
               echo "✅ noVNC آماده است"
               exit 0
             fi
 
-            echo "⏳ noVNC هنوز آماده نیست... $i/60"
+            echo "⏳ تلاش $i/60"
             sleep 2
           done
 
           echo "❌ noVNC آماده نشد"
-
           docker ps -a
           docker logs chromium || true
-
           exit 1
 
       # ==========================================================
@@ -73,111 +75,119 @@ jobs:
       - name: Inspect Chromium
         shell: bash
         run: |
-          echo "========== docker ps =========="
+          echo "========== DOCKER =========="
           docker ps -a
+          echo "============================"
 
           echo ""
-          echo "========== processes =========="
+          echo "========== PROCESSES =========="
           docker exec chromium ps aux || true
+          echo "==============================="
 
           echo ""
-          echo "========== listening =========="
-          docker exec chromium sh -c \
-            "netstat -lntp 2>/dev/null || ss -lntp 2>/dev/null || true"
-
-          echo ""
-          echo "========== chromium logs =========="
-          docker logs chromium || true
+          echo "========== LOGS =========="
+          docker logs --tail 200 chromium || true
+          echo "=========================="
 
       # ==========================================================
-      # 4. Find working CDP endpoint
+      # 4. Wait for internal Chromium CDP
       # ==========================================================
-      - name: Wait for CDP
+      - name: Wait for internal CDP
         shell: bash
         run: |
           set -e
 
-          echo "⏳ پیدا کردن Chrome DevTools Protocol..."
+          echo "⏳ منتظر CDP داخلی Chromium..."
 
           for i in {1..90}; do
 
-            echo ""
-            echo "========== CDP CHECK $i/90 =========="
+            if docker exec chromium \
+              sh -c \
+              'wget -qO- http://127.0.0.1:9223/json/version' \
+              > /tmp/internal-cdp.json 2>/dev/null; then
 
-            # First try host 9222
-            if curl -fsS \
-              --max-time 3 \
-              http://127.0.0.1:9222/json/version \
-              > /tmp/cdp-version.json 2>/dev/null; then
+              echo ""
+              echo "✅ CDP داخلی آماده است"
+              echo ""
 
-              echo "✅ CDP روی host:9222 فعال است"
-              cat /tmp/cdp-version.json
-
-              echo "CDP_URL=http://127.0.0.1:9222" >> "$GITHUB_ENV"
+              cat /tmp/internal-cdp.json
 
               exit 0
             fi
 
-            # Then try from inside container on 9223
-            if docker exec chromium sh -c \
-              "wget -qO- http://127.0.0.1:9223/json/version" \
-              > /tmp/cdp-version.json 2>/dev/null; then
+            echo "⏳ CDP داخلی هنوز آماده نیست... $i/90"
+            sleep 2
+          done
 
-              echo "✅ CDP داخل container روی 9223 فعال است"
-              cat /tmp/cdp-version.json
+          echo ""
+          echo "❌ CDP داخلی آماده نشد"
 
-              # Make a direct host tunnel to the actual Chromium CDP port.
-              docker run -d \
-                --name cdp-proxy \
-                --network container:chromium \
-                alpine/socat \
-                TCP-LISTEN:9222,fork,reuseaddr \
-                TCP:127.0.0.1:9223
+          echo ""
+          echo "========== PROCESSES =========="
+          docker exec chromium ps aux || true
 
-              sleep 1
+          echo ""
+          echo "========== LOGS =========="
+          docker logs --tail 300 chromium || true
 
-              if curl -fsS \
-                --max-time 3 \
-                http://127.0.0.1:9222/json/version \
-                > /tmp/cdp-version.json 2>/dev/null; then
+          exit 1
 
-                echo "✅ CDP proxy فعال شد"
-                cat /tmp/cdp-version.json
+      # ==========================================================
+      # 5. Create direct CDP proxy
+      # ==========================================================
+      - name: Create CDP proxy
+        shell: bash
+        run: |
+          set -e
 
-                echo "CDP_URL=http://127.0.0.1:9222" >> "$GITHUB_ENV"
+          echo "⏳ ایجاد proxy برای CDP..."
 
-                exit 0
-              fi
-            fi
+          docker run -d \
+            --name cdp-proxy \
+            --network container:chromium \
+            alpine/socat \
+            TCP-LISTEN:9224,fork,reuseaddr \
+            TCP:127.0.0.1:9223
 
-            echo "❌ CDP هنوز آماده نیست"
+          echo "✅ CDP proxy created"
 
-            if [ "$i" -eq 10 ] || [ "$i" -eq 30 ] || [ "$i" -eq 60 ] || [ "$i" -eq 90 ]; then
-              echo ""
-              echo "========== DEBUG =========="
+          sleep 2
 
-              docker exec chromium ps aux || true
+      # ==========================================================
+      # 6. Test CDP from runner
+      # ==========================================================
+      - name: Test CDP
+        shell: bash
+        run: |
+          set -e
 
-              docker exec chromium sh -c \
-                "wget -qO- http://127.0.0.1:9223/json/version || true"
+          echo "⏳ تست اتصال CDP..."
 
-              docker logs --tail 100 chromium || true
+          # Since cdp-proxy shares Chromium network namespace,
+          # use docker exec to verify the proxy itself.
+          for i in {1..30}; do
 
-              echo "============================"
+            if docker exec chromium \
+              sh -c \
+              'wget -qO- http://127.0.0.1:9224/json/version' \
+              > /tmp/cdp-proxy.json 2>/dev/null; then
+
+              echo "✅ CDP proxy داخل namespace فعال است"
+              cat /tmp/cdp-proxy.json
+
+              exit 0
             fi
 
             sleep 2
           done
 
-          echo "❌ CDP در زمان مشخص آماده نشد"
+          echo "❌ CDP proxy تست نشد"
 
-          docker ps -a
           docker logs chromium || true
-
           exit 1
 
       # ==========================================================
-      # 5. Setup Node
+      # 7. Setup Node.js
       # ==========================================================
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -185,7 +195,7 @@ jobs:
           node-version: 24
 
       # ==========================================================
-      # 6. Install Playwright
+      # 8. Install Playwright
       # ==========================================================
       - name: Install Playwright
         shell: bash
@@ -195,229 +205,39 @@ jobs:
           npm init -y
           npm install playwright
 
-          node -e "console.log('Playwright installed')"
+          echo "✅ Playwright installed"
 
       # ==========================================================
-      # 7. Test Playwright CDP
-      # ==========================================================
-      - name: Test Playwright CDP
-        shell: bash
-        run: |
-          set -e
-
-          node <<'EOF'
-          const { chromium } = require("playwright");
-
-          (async () => {
-            console.log("CDP URL:", process.env.CDP_URL);
-
-            const browser = await chromium.connectOverCDP(
-              process.env.CDP_URL
-            );
-
-            console.log("✅ Playwright connected to Chromium");
-
-            const contexts = browser.contexts();
-
-            console.log("Contexts:", contexts.length);
-
-            for (const context of contexts) {
-              console.log("Pages:", context.pages().length);
-
-              for (const page of context.pages()) {
-                console.log("Page:", page.url());
-              }
-            }
-
-            await browser.close();
-          })().catch(err => {
-            console.error("❌ Playwright CDP test failed");
-            console.error(err);
-            process.exit(1);
-          });
-          EOF
-
-      # ==========================================================
-      # 8. Open Website
-      # ==========================================================
-      - name: Open Website
-        shell: bash
-        env:
-          WEBSITE_INPUT: ${{ inputs.website }}
-        run: |
-          set -e
-
-          WEBSITE="$WEBSITE_INPUT"
-
-          if [[ "$WEBSITE" != http://* && "$WEBSITE" != https://* ]]; then
-            WEBSITE="https://$WEBSITE"
-          fi
-
-          echo "🌐 Website: $WEBSITE"
-
-          node <<'EOF'
-          const { chromium } = require("playwright");
-
-          (async () => {
-            const browser = await chromium.connectOverCDP(
-              process.env.CDP_URL
-            );
-
-            const context =
-              browser.contexts()[0] ||
-              await browser.newContext();
-
-            let pages = context.pages();
-
-            let page = pages[0];
-
-            if (!page) {
-              page = await context.newPage();
-            }
-
-            console.log("🌐 Opening:", process.env.WEBSITE);
-
-            await page.goto(
-              process.env.WEBSITE,
-              {
-                waitUntil: "domcontentloaded",
-                timeout: 60000
-              }
-            ).catch(err => {
-              console.log(
-                "⚠️ Navigation warning:",
-                err.message
-              );
-            });
-
-            console.log("Current URL:", page.url());
-
-            // Keep browser alive.
-            await browser.close();
-          })().catch(err => {
-            console.error(err);
-            process.exit(1);
-          });
-          EOF
-        env:
-          WEBSITE: ${{ inputs.website }}
-
-      # ==========================================================
-      # 9. Install Cloudflared
-      # ==========================================================
-      - name: Install Cloudflared
-        shell: bash
-        run: |
-          set -e
-
-          echo "⏳ نصب cloudflared..."
-
-          curl -fsSL \
-            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb \
-            -o cloudflared.deb
-
-          sudo dpkg -i cloudflared.deb
-
-          cloudflared --version
-
-      # ==========================================================
-      # 10. Start Cloudflare Tunnel
-      # ==========================================================
-      - name: Start Cloudflare Tunnel
-        shell: bash
-        run: |
-          set -e
-
-          echo "⏳ شروع Cloudflare Tunnel..."
-
-          cloudflared tunnel \
-            --url http://127.0.0.1:5800 \
-            --no-autoupdate \
-            > /tmp/cloudflared.log 2>&1 &
-
-          echo $! > /tmp/cloudflared.pid
-
-          TUNNEL_URL=""
-
-          for i in {1..60}; do
-
-            TUNNEL_URL=$(
-              grep -oE \
-              'https://[-a-zA-Z0-9]+\.trycloudflare\.com' \
-              /tmp/cloudflared.log \
-              | head -n 1 || true
-            )
-
-            if [ -n "$TUNNEL_URL" ]; then
-              break
-            fi
-
-            echo "⏳ منتظر URL تونل... $i/60"
-
-            sleep 2
-          done
-
-          if [ -z "$TUNNEL_URL" ]; then
-            echo "❌ Cloudflare Tunnel URL پیدا نشد"
-            cat /tmp/cloudflared.log
-            exit 1
-          fi
-
-          echo ""
-          echo "=========================================="
-          echo "🌐 NO VNC URL"
-          echo "=========================================="
-          echo "$TUNNEL_URL"
-          echo "=========================================="
-          echo ""
-          echo "🔐 VNC Password: your_password"
-          echo ""
-
-          echo "TUNNEL_URL=$TUNNEL_URL" >> "$GITHUB_ENV"
-
-      # ==========================================================
-      # 11. Create Recorder
+      # 9. Create Recorder
       # ==========================================================
       - name: Create Recorder
         shell: bash
         run: |
           cat > recorder.js <<'EOF'
-
           const { chromium } = require("playwright");
           const fs = require("fs");
 
           const OUTPUT = "recording.json";
+          const CDP_URL = "http://127.0.0.1:9222";
 
           let actions = [];
 
-          // =====================================================
-          // Save
-          // =====================================================
-
+          // ------------------------------------------------------
+          // Save without timestamp
+          // ------------------------------------------------------
           function save() {
-            try {
-              fs.writeFileSync(
-                OUTPUT,
-                JSON.stringify(actions, null, 2),
-                "utf8"
-              );
-            } catch (err) {
-              console.error(
-                "❌ Cannot save recording:",
-                err.message
-              );
-            }
+            fs.writeFileSync(
+              OUTPUT,
+              JSON.stringify(actions, null, 2),
+              "utf8"
+            );
           }
 
-          // =====================================================
-          // Add action
-          // =====================================================
-
-          function addAction(action) {
-            actions.push({
-              ...action,
-              timestamp: Date.now()
-            });
+          // ------------------------------------------------------
+          // Record action
+          // ------------------------------------------------------
+          function record(action) {
+            actions.push(action);
 
             console.log(
               "[RECORDER]",
@@ -427,27 +247,25 @@ jobs:
             save();
           }
 
-          // =====================================================
-          // Install recorder
-          // =====================================================
-
+          // ------------------------------------------------------
+          // Install recorder in page
+          // ------------------------------------------------------
           async function installRecorder(page) {
 
             console.log(
-              "📄 Installing recorder:",
+              "📄 Installing recorder on:",
               page.url()
             );
 
-            // ---------------------------------------------------
-            // Click callback
-            // ---------------------------------------------------
-
+            // ----------------------------------------------------
+            // Expose click
+            // ----------------------------------------------------
             try {
               await page.exposeFunction(
                 "__recordClick",
                 async data => {
 
-                  addAction({
+                  record({
                     type: "click",
                     selector: data.selector,
                     x: data.x,
@@ -458,41 +276,36 @@ jobs:
               );
             } catch (_) {}
 
-            // ---------------------------------------------------
-            // Input callback
-            // ---------------------------------------------------
-
+            // ----------------------------------------------------
+            // Expose input
+            // ----------------------------------------------------
             try {
               await page.exposeFunction(
                 "__recordInput",
                 async data => {
 
-                  let value = data.value;
-
-                  if (data.password) {
-                    value = "******";
-                  }
-
-                  addAction({
+                  record({
                     type: "type",
                     selector: data.selector,
-                    value
+                    value:
+                      data.password
+                        ? "******"
+                        : data.value
                   });
 
                 }
               );
             } catch (_) {}
 
-            // ---------------------------------------------------
-            // Scroll callback
-            // ---------------------------------------------------
-
+            // ----------------------------------------------------
+            // Expose scroll
+            // ----------------------------------------------------
             try {
               await page.exposeFunction(
                 "__recordScroll",
                 async data => {
 
-                  addAction({
+                  record({
                     type: "scroll",
                     x: data.x,
                     y: data.y
@@ -502,10 +315,9 @@ jobs:
               );
             } catch (_) {}
 
-            // ---------------------------------------------------
-            // Navigation callback
-            // ---------------------------------------------------
-
+            // ----------------------------------------------------
+            // Inject into current document
+            // ----------------------------------------------------
             async function inject() {
 
               try {
@@ -518,12 +330,7 @@ jobs:
                     return;
                   }
 
-                  window.__BROWSER_RECORDER_INSTALLED =
-                    true;
-
-                  // =============================================
-                  // Selector generator
-                  // =============================================
+                  window.__BROWSER_RECORDER_INSTALLED = true;
 
                   function selectorFor(el) {
 
@@ -531,11 +338,13 @@ jobs:
                       return null;
                     }
 
+                    // ID
                     if (el.id) {
                       return "#" +
                         CSS.escape(el.id);
                     }
 
+                    // data-testid
                     const testId =
                       el.getAttribute("data-testid");
 
@@ -543,6 +352,7 @@ jobs:
                       return `[data-testid="${CSS.escape(testId)}"]`;
                     }
 
+                    // name
                     const name =
                       el.getAttribute("name");
 
@@ -550,6 +360,7 @@ jobs:
                       return `${el.tagName.toLowerCase()}[name="${CSS.escape(name)}"]`;
                     }
 
+                    // aria-label
                     const aria =
                       el.getAttribute("aria-label");
 
@@ -557,8 +368,9 @@ jobs:
                       return `${el.tagName.toLowerCase()}[aria-label="${CSS.escape(aria)}"]`;
                     }
 
-                    let current = el;
+                    // fallback
                     const parts = [];
+                    let current = el;
 
                     while (
                       current &&
@@ -575,17 +387,11 @@ jobs:
                         current.classList.length
                       ) {
 
-                        const classes =
+                        part += "." +
                           [...current.classList]
                             .slice(0, 2)
-                            .map(x =>
-                              CSS.escape(x)
-                            )
+                            .map(x => CSS.escape(x))
                             .join(".");
-
-                        if (classes) {
-                          part += "." + classes;
-                        }
                       }
 
                       const parent =
@@ -617,38 +423,48 @@ jobs:
                     return parts.join(" > ");
                   }
 
-                  // =============================================
+                  // ------------------------------------------------
                   // CLICK
-                  // =============================================
-
+                  // ------------------------------------------------
                   document.addEventListener(
                     "click",
                     event => {
 
-                      const element =
+                      let element =
                         event.target;
 
                       if (!element) {
                         return;
                       }
 
-                      const selector =
-                        selectorFor(element);
+                      if (
+                        element instanceof SVGElement
+                      ) {
+
+                        element =
+                          element.closest(
+                            "button, a, input, textarea, select, [role='button']"
+                          ) || element;
+                      }
 
                       window.__recordClick({
-                        selector,
-                        x: event.clientX,
-                        y: event.clientY
+                        selector:
+                          selectorFor(element),
+
+                        x:
+                          event.clientX,
+
+                        y:
+                          event.clientY
                       }).catch(() => {});
 
                     },
                     true
                   );
 
-                  // =============================================
+                  // ------------------------------------------------
                   // INPUT
-                  // =============================================
-
+                  // ------------------------------------------------
                   document.addEventListener(
                     "input",
                     event => {
@@ -669,12 +485,10 @@ jobs:
                           HTMLSelectElement
                       ) {
 
-                        const selector =
-                          selectorFor(element);
-
                         window.__recordInput({
 
-                          selector,
+                          selector:
+                            selectorFor(element),
 
                           value:
                             element.value,
@@ -692,10 +506,9 @@ jobs:
                     true
                   );
 
-                  // =============================================
+                  // ------------------------------------------------
                   // SCROLL
-                  // =============================================
-
+                  // ------------------------------------------------
                   let lastX =
                     window.scrollX;
 
@@ -708,9 +521,7 @@ jobs:
                     "scroll",
                     () => {
 
-                      clearTimeout(
-                        scrollTimer
-                      );
+                      clearTimeout(scrollTimer);
 
                       scrollTimer =
                         setTimeout(() => {
@@ -745,26 +556,26 @@ jobs:
                   );
 
                   console.log(
-                    "🟢 Browser Recorder injected"
+                    "🟢 Recorder injected"
                   );
 
                 });
 
-              } catch (err) {
+              } catch (error) {
 
                 console.log(
                   "⚠️ Injection failed:",
-                  err.message
+                  error.message
                 );
+
               }
             }
 
             await inject();
 
-            // ---------------------------------------------------
-            // Navigation
-            // ---------------------------------------------------
-
+            // ------------------------------------------------------
+            // Re-inject after navigation
+            // ------------------------------------------------------
             page.on(
               "framenavigated",
               async frame => {
@@ -778,12 +589,7 @@ jobs:
                 const url =
                   frame.url();
 
-                console.log(
-                  "[RECORDER] Navigation:",
-                  url
-                );
-
-                addAction({
+                record({
                   type: "navigation",
                   url
                 });
@@ -799,77 +605,37 @@ jobs:
             );
           }
 
-          // =====================================================
+          // ------------------------------------------------------
           // Main
-          // =====================================================
-
+          // ------------------------------------------------------
           async function main() {
 
             console.log("");
             console.log(
-              "======================================"
+              "===================================="
             );
             console.log(
-              "🎥 BROWSER RECORDER STARTING"
+              "🎥 BROWSER RECORDER"
             );
             console.log(
-              "======================================"
+              "===================================="
             );
             console.log("");
 
-            // Create immediately
             save();
 
             console.log(
-              "📁 Recording file:",
-              OUTPUT
+              "⏳ Connecting to Chromium..."
             );
 
-            // ---------------------------------------------------
-            // Connect
-            // ---------------------------------------------------
+            const browser =
+              await chromium.connectOverCDP(
+                CDP_URL
+              );
 
-            let browser = null;
-
-            for (let i = 1; i <= 30; i++) {
-
-              try {
-
-                console.log(
-                  `⏳ Connecting to CDP ${i}/30`
-                );
-
-                browser =
-                  await chromium.connectOverCDP(
-                    process.env.CDP_URL
-                  );
-
-                console.log(
-                  "✅ Connected to Chromium"
-                );
-
-                break;
-
-              } catch (err) {
-
-                console.log(
-                  "⚠️ CDP connection failed:",
-                  err.message
-                );
-
-                if (i === 30) {
-                  throw err;
-                }
-
-                await new Promise(
-                  r => setTimeout(r, 2000)
-                );
-              }
-            }
-
-            // ---------------------------------------------------
-            // Contexts
-            // ---------------------------------------------------
+            console.log(
+              "✅ Connected to Chromium"
+            );
 
             const contexts =
               browser.contexts();
@@ -878,17 +644,23 @@ jobs:
               `📦 Contexts: ${contexts.length}`
             );
 
-            for (const context of contexts) {
+            for (
+              const context of contexts
+            ) {
 
               const pages =
                 context.pages();
 
               console.log(
-                `📄 Existing pages: ${pages.length}`
+                `📄 Pages: ${pages.length}`
               );
 
-              for (const page of pages) {
+              for (
+                const page of pages
+              ) {
+
                 await installRecorder(page);
+
               }
 
               context.on(
@@ -896,9 +668,15 @@ jobs:
                 async page => {
 
                   console.log(
-                    "🆕 New page:",
+                    "🆕 New tab/page:",
                     page.url()
                   );
+
+                  await page
+                    .waitForLoadState(
+                      "domcontentloaded"
+                    )
+                    .catch(() => {});
 
                   await installRecorder(page);
 
@@ -908,65 +686,53 @@ jobs:
 
             console.log("");
             console.log(
-              "======================================"
+              "===================================="
             );
             console.log(
               "🟢 RECORDER ACTIVE"
             );
             console.log(
-              "======================================"
+              "===================================="
             );
             console.log("");
-
             console.log(
-              "🖱️ Click recording: ON"
+              "🖱️ Click: ON"
             );
-
             console.log(
-              "⌨️ Input recording: ON"
+              "⌨️ Type: ON"
             );
-
             console.log(
-              "📜 Scroll recording: ON"
+              "📜 Scroll: ON"
             );
-
             console.log(
-              "🌐 Navigation recording: ON"
+              "🌐 Navigation: ON"
             );
-
-            console.log("");
             console.log(
-              "🌐 وارد noVNC شو و کارهایت را انجام بده."
+              "⏱️ Timestamp: OFF"
+            );
+            console.log(
+              "🔐 Password values: HIDDEN"
             );
             console.log("");
-
-            // ---------------------------------------------------
-            // Keep process alive
-            // ---------------------------------------------------
-
-            const shutdown = () => {
-
-              console.log(
-                "🛑 Stopping recorder..."
-              );
-
-              save();
-
-              console.log(
-                `💾 ${actions.length} actions saved`
-              );
-
-              process.exit(0);
-            };
+            console.log(
+              "👤 وارد noVNC شو و شروع کن."
+            );
+            console.log("");
 
             process.on(
               "SIGINT",
-              shutdown
+              () => {
+                save();
+                process.exit(0);
+              }
             );
 
             process.on(
               "SIGTERM",
-              shutdown
+              () => {
+                save();
+                process.exit(0);
+              }
             );
 
             await new Promise(
@@ -974,53 +740,203 @@ jobs:
             );
           }
 
-          main().catch(err => {
+          main().catch(error => {
 
             console.error(
-              "❌ RECORDER ERROR"
+              "❌ Recorder error:"
             );
 
-            console.error(err);
+            console.error(error);
 
             save();
 
             process.exit(1);
-
           });
-
           EOF
 
+          echo "✅ recorder.js created"
+
       # ==========================================================
-      # 12. Start Recorder
+      # 10. Open Website AND start Recorder together
       # ==========================================================
-      - name: Start Recorder
+      - name: Start Browser and Recorder
         shell: bash
+        env:
+          WEBSITE_INPUT: ${{ inputs.website }}
         run: |
           set -e
 
-          echo ""
+          WEBSITE="$WEBSITE_INPUT"
+
+          if [[ \
+            "$WEBSITE" != http://* &&
+            "$WEBSITE" != https://*
+          ]]; then
+            WEBSITE="https://$WEBSITE"
+          fi
+
+          export WEBSITE
+
           echo "=========================================="
-          echo "🎥 STARTING BROWSER RECORDER"
+          echo "🌐 Website"
+          echo "=========================================="
+          echo "$WEBSITE"
+          echo ""
+
+          echo "=========================================="
+          echo "⏳ Opening website..."
           echo "=========================================="
 
-          echo ""
-          echo "🌐 noVNC URL:"
-          echo "$TUNNEL_URL"
+          node <<'EOF' &
+          const { chromium } = require("playwright");
 
-          echo ""
-          echo "🔐 Password:"
-          echo "your_password"
+          (async () => {
+
+            const browser =
+              await chromium.connectOverCDP(
+                process.env.CDP_URL
+              );
+
+            const context =
+              browser.contexts()[0];
+
+            if (!context) {
+              throw new Error(
+                "No browser context"
+              );
+            }
+
+            let pages =
+              context.pages();
+
+            let page =
+              pages[0];
+
+            if (!page) {
+              page =
+                await context.newPage();
+            }
+
+            console.log(
+              "🌐 Opening:",
+              process.env.WEBSITE
+            );
+
+            await page.goto(
+              process.env.WEBSITE,
+              {
+                waitUntil: "domcontentloaded",
+                timeout: 60000
+              }
+            ).catch(error => {
+
+              console.log(
+                "⚠️ Navigation warning:",
+                error.message
+              );
+
+            });
+
+            console.log(
+              "✅ Current URL:",
+              page.url()
+            );
+
+          })().catch(error => {
+
+            console.error(
+              "❌ Open website error:",
+              error
+            );
+
+          });
+          EOF
+
+          echo $! > /tmp/open-site.pid
+
+          sleep 3
 
           echo ""
           echo "=========================================="
-          echo "🟢 RECORDER ACTIVE"
+          echo "🎥 STARTING RECORDER"
           echo "=========================================="
           echo ""
 
           node recorder.js
+        env:
+          CDP_URL: http://127.0.0.1:9222
 
       # ==========================================================
-      # 13. Upload recording
+      # 11. Install Cloudflared
+      # ==========================================================
+      - name: Install Cloudflared
+        if: always()
+        run: |
+          set -e
+
+          curl -fsSL \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb \
+            -o cloudflared.deb
+
+          sudo dpkg -i cloudflared.deb
+
+          cloudflared --version
+
+      # ==========================================================
+      # 12. Start Cloudflare Tunnel
+      # ==========================================================
+      - name: Start Cloudflare Tunnel
+        if: always()
+        run: |
+          set -e
+
+          cloudflared tunnel \
+            --url http://127.0.0.1:5800 \
+            --no-autoupdate \
+            > /tmp/cloudflared.log 2>&1 &
+
+          echo $! > /tmp/cloudflared.pid
+
+          echo "⏳ منتظر Cloudflare URL..."
+
+          TUNNEL_URL=""
+
+          for i in {1..60}; do
+
+            TUNNEL_URL=$(
+              grep -oE \
+                'https://[-a-zA-Z0-9]+\.trycloudflare\.com' \
+                /tmp/cloudflared.log \
+                | head -n 1 \
+                || true
+            )
+
+            if [ -n "$TUNNEL_URL" ]; then
+              break
+            fi
+
+            sleep 2
+
+          done
+
+          echo ""
+          echo "=========================================="
+          echo "🌐 NO VNC URL"
+          echo "=========================================="
+          echo "$TUNNEL_URL"
+          echo "=========================================="
+          echo ""
+          echo "🔐 Password: your_password"
+          echo ""
+
+          if [ -z "$TUNNEL_URL" ]; then
+            echo "❌ Cloudflare URL پیدا نشد"
+            cat /tmp/cloudflared.log || true
+            exit 1
+          fi
+
+      # ==========================================================
+      # 13. Upload Recording
       # ==========================================================
       - name: Upload Recording
         if: always()
@@ -1031,7 +947,7 @@ jobs:
           if-no-files-found: warn
 
       # ==========================================================
-      # 14. Upload logs
+      # 14. Upload Debug Logs
       # ==========================================================
       - name: Upload Debug Logs
         if: always()
@@ -1041,6 +957,7 @@ jobs:
           path: |
             /tmp/cloudflared.log
             /tmp/cdp-version.json
+            /tmp/internal-cdp.json
           if-no-files-found: warn
 
       # ==========================================================
@@ -1052,7 +969,22 @@ jobs:
         run: |
           echo "🧹 Cleaning up..."
 
-          docker rm -f cdp-proxy 2>/dev/null || true
-          docker rm -f chromium 2>/dev/null || true
+          if [ -f /tmp/open-site.pid ]; then
+            kill \
+              "$(cat /tmp/open-site.pid)" \
+              2>/dev/null || true
+          fi
+
+          if [ -f /tmp/cloudflared.pid ]; then
+            kill \
+              "$(cat /tmp/cloudflared.pid)" \
+              2>/dev/null || true
+          fi
+
+          docker rm -f cdp-proxy \
+            2>/dev/null || true
+
+          docker rm -f chromium \
+            2>/dev/null || true
 
           echo "✅ Cleanup completed"
