@@ -1,4 +1,3 @@
-
 name: Browser Recorder - noVNC
 
 on:
@@ -18,7 +17,7 @@ jobs:
     steps:
 
       # ==================================================
-      # 1. اجرای Chromium + noVNC + CDP
+      # Chromium + noVNC
       # ==================================================
 
       - name: Start Chromium
@@ -26,26 +25,23 @@ jobs:
           docker run -d \
             --name chromium \
             --restart unless-stopped \
-            -e VNC_PASSWORD=your_password \
-            -e DISPLAY_WIDTH=1280 \
-            -e DISPLAY_HEIGHT=720 \
-            -e CHROMIUM_REMOTE_DEBUGGING=1 \
-            -e CHROMIUM_REMOTE_DEBUGGING_PORT=9222 \
-            -e KEEP_APP_RUNNING=1 \
+            -e VNC_PASS=your_password \
+            -e RESOLUTION=1280x720 \
+            -e ENABLE_CDP=1 \
+            -e CDP_PORT=9222 \
             -p 5800:5800 \
             -p 9222:9222 \
             jlesage/chromium:latest
 
       # ==================================================
-      # 2. بررسی وضعیت کانتینر
+      # Wait for noVNC
       # ==================================================
 
-      - name: Check Chromium
+      - name: Wait for noVNC
         run: |
-          echo "⏳ منتظر Chromium..."
+          echo "⏳ منتظر noVNC..."
 
           for i in {1..60}; do
-
             if curl -fs http://127.0.0.1:5800 > /dev/null 2>&1; then
               echo "✅ noVNC آماده است"
               break
@@ -53,7 +49,6 @@ jobs:
 
             echo "⏳ تلاش $i/60"
             sleep 2
-
           done
 
           echo ""
@@ -61,49 +56,63 @@ jobs:
           docker ps
           echo "============================"
 
-          echo ""
-          echo "========== LOGS ============"
-          docker logs --tail 100 chromium || true
-          echo "============================"
-
       # ==================================================
-      # 3. صبر برای CDP
+      # Debug Chromium
       # ==================================================
 
-      - name: Wait for Chrome DevTools
+      - name: Chromium logs
+        run: |
+          echo "========== CHROMIUM LOGS =========="
+          docker logs --tail 200 chromium || true
+          echo "==================================="
+
+      # ==================================================
+      # Wait for CDP
+      # ==================================================
+
+      - name: Wait for CDP
         run: |
           echo "⏳ منتظر Chrome DevTools Protocol..."
 
-          for i in {1..60}; do
+          for i in {1..90}; do
 
-            if curl -fs http://127.0.0.1:9222/json/version > /tmp/cdp.json 2>/dev/null; then
+            if curl -fs \
+              http://127.0.0.1:9222/json/version \
+              > /tmp/cdp.json 2>/dev/null
+            then
 
+              echo ""
+              echo "================================"
               echo "✅ CDP آماده است"
+              echo "================================"
+              cat /tmp/cdp.json
               echo ""
 
-              cat /tmp/cdp.json
-
-              break
+              exit 0
             fi
 
-            echo "⏳ CDP هنوز آماده نیست... $i/60"
-            sleep 2
+            echo "⏳ CDP هنوز آماده نیست... $i/90"
 
+            sleep 2
           done
 
           echo ""
+          echo "❌ CDP بعد از 180 ثانیه آماده نشد."
+          echo ""
 
-          if ! curl -fs http://127.0.0.1:9222/json/version > /dev/null 2>&1; then
-            echo "❌ CDP بالا نیامد"
-            echo ""
-            echo "========== Chromium logs =========="
-            docker logs --tail 200 chromium || true
-            echo "==================================="
-            exit 1
-          fi
+          echo "========== PORT 9222 =========="
+          curl -v http://127.0.0.1:9222/json/version || true
+          echo "==============================="
+
+          echo ""
+          echo "========== CHROMIUM LOGS =========="
+          docker logs --tail 300 chromium || true
+          echo "==================================="
+
+          exit 1
 
       # ==================================================
-      # 4. نصب Node.js
+      # Node
       # ==================================================
 
       - name: Setup Node.js
@@ -112,7 +121,7 @@ jobs:
           node-version: 24
 
       # ==================================================
-      # 5. نصب Playwright
+      # Playwright
       # ==================================================
 
       - name: Install Playwright
@@ -121,7 +130,7 @@ jobs:
           npm install playwright
 
       # ==================================================
-      # 6. ساخت Recorder
+      # Create Recorder
       # ==================================================
 
       - name: Create Recorder
@@ -155,59 +164,6 @@ jobs:
             save();
           }
 
-          async function main() {
-
-            console.log("");
-            console.log("================================");
-            console.log("🎥 RECORDER STARTING");
-            console.log("================================");
-            console.log("");
-
-            const browser =
-              await chromium.connectOverCDP(
-                "http://127.0.0.1:9222"
-              );
-
-            console.log("✅ Connected to Chromium");
-            console.log("");
-
-            const contexts =
-              browser.contexts();
-
-            for (const context of contexts) {
-
-              for (const page of context.pages()) {
-
-                installRecorder(page);
-
-              }
-
-              context.on("page", page => {
-
-                installRecorder(page);
-
-              });
-
-            }
-
-            console.log("================================");
-            console.log("🟢 RECORDER ACTIVE");
-            console.log("================================");
-            console.log("");
-            console.log("👤 حالا وارد noVNC شو.");
-            console.log("🖱️ کلیک‌ها ثبت می‌شوند.");
-            console.log("⌨️ تایپ‌ها ثبت می‌شوند.");
-            console.log("📜 اسکرول‌ها ثبت می‌شوند.");
-            console.log("🌐 Navigation ثبت می‌شود.");
-            console.log("⏱️ زمان ذخیره نمی‌شود.");
-            console.log("");
-
-            save();
-
-            await new Promise(() => {});
-
-          }
-
           async function installRecorder(page) {
 
             console.log(
@@ -226,7 +182,7 @@ jobs:
 
             await page.addInitScript(() => {
 
-              function getSelector(el) {
+              function selector(el) {
 
                 if (!el) {
                   return null;
@@ -237,15 +193,18 @@ jobs:
                 }
 
                 if (el.name) {
+
                   return (
                     el.tagName.toLowerCase() +
                     '[name="' +
                     CSS.escape(el.name) +
                     '"]'
                   );
+
                 }
 
                 if (el.getAttribute("data-testid")) {
+
                   return (
                     '[data-testid="' +
                     CSS.escape(
@@ -253,15 +212,16 @@ jobs:
                     ) +
                     '"]'
                   );
+
                 }
 
                 return el.tagName.toLowerCase();
 
               }
 
-              // ================================
+              // ------------------------------------------
               // CLICK
-              // ================================
+              // ------------------------------------------
 
               document.addEventListener(
                 "click",
@@ -273,8 +233,7 @@ jobs:
 
                     type: "click",
 
-                    selector:
-                      getSelector(el),
+                    selector: selector(el),
 
                     x: event.clientX,
 
@@ -286,9 +245,9 @@ jobs:
                 true
               );
 
-              // ================================
-              // INPUT / TYPE
-              // ================================
+              // ------------------------------------------
+              // TYPE
+              // ------------------------------------------
 
               document.addEventListener(
                 "input",
@@ -306,18 +265,17 @@ jobs:
                     el instanceof HTMLSelectElement
                   ) {
 
-                    const password =
+                    const isPassword =
                       el.type === "password";
 
                     window.__recordAction({
 
                       type: "type",
 
-                      selector:
-                        getSelector(el),
+                      selector: selector(el),
 
                       value:
-                        password
+                        isPassword
                           ? "******"
                           : el.value
 
@@ -329,9 +287,9 @@ jobs:
                 true
               );
 
-              // ================================
+              // ------------------------------------------
               // SCROLL
-              // ================================
+              // ------------------------------------------
 
               let lastX = window.scrollX;
               let lastY = window.scrollY;
@@ -370,6 +328,10 @@ jobs:
 
             });
 
+            // ------------------------------------------
+            // NAVIGATION
+            // ------------------------------------------
+
             page.on(
               "framenavigated",
               frame => {
@@ -393,9 +355,74 @@ jobs:
 
           }
 
+          async function main() {
+
+            console.log("");
+            console.log("================================");
+            console.log("🎥 RECORDER STARTING");
+            console.log("================================");
+
+            const browser =
+              await chromium.connectOverCDP(
+                "http://127.0.0.1:9222"
+              );
+
+            console.log(
+              "✅ Connected to Chromium"
+            );
+
+            const contexts =
+              browser.contexts();
+
+            for (const context of contexts) {
+
+              for (const page of context.pages()) {
+
+                await installRecorder(page);
+
+              }
+
+              context.on(
+                "page",
+                async page => {
+
+                  await installRecorder(page);
+
+                }
+              );
+
+            }
+
+            save();
+
+            console.log("");
+            console.log("================================");
+            console.log("🟢 RECORDER ACTIVE");
+            console.log("================================");
+            console.log("");
+            console.log("🖱️ Click = ثبت می‌شود");
+            console.log("⌨️ Type = ثبت می‌شود");
+            console.log("📜 Scroll = ثبت می‌شود");
+            console.log("🌐 Navigation = ثبت می‌شود");
+            console.log("⏱️ Timestamp = ذخیره نمی‌شود");
+            console.log("");
+            console.log("👤 حالا وارد noVNC شو و شروع کن.");
+            console.log("");
+
+            // زنده نگه داشتن Recorder
+
+            await new Promise(
+              () => {}
+            );
+
+          }
+
           main().catch(error => {
 
-            console.error(error);
+            console.error(
+              "❌ Recorder error:",
+              error
+            );
 
             process.exit(1);
 
@@ -404,15 +431,87 @@ jobs:
           EOF
 
       # ==================================================
-      # 7. اجرای Recorder
+      # Start Recorder in background
       # ==================================================
 
       - name: Start Recorder
         run: |
-          node recorder.js
+          node recorder.js > recorder.log 2>&1 &
+
+          echo $! > recorder.pid
+
+          sleep 3
+
+          echo ""
+          echo "========== RECORDER =========="
+          cat recorder.log
+          echo "=============================="
 
       # ==================================================
-      # 8. آپلود recording
+      # Cloudflare
+      # ==================================================
+
+      - name: Install cloudflared
+        run: |
+          curl -L \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb \
+            -o cloudflared.deb
+
+          sudo dpkg -i cloudflared.deb
+
+      - name: Start Cloudflare Tunnel
+        run: |
+
+          cloudflared tunnel \
+            --url http://127.0.0.1:5800 \
+            --no-autoupdate \
+            > /tmp/cloudflared.log 2>&1 &
+
+          sleep 10
+
+          echo ""
+          echo "========================================"
+          echo "🌐 NO-VNC URL"
+          echo "========================================"
+
+          grep -o \
+            'https://[-a-zA-Z0-9]*\.trycloudflare\.com' \
+            /tmp/cloudflared.log \
+            | head -1 || true
+
+          echo "========================================"
+          echo ""
+
+      # ==================================================
+      # Keep alive
+      # ==================================================
+
+      - name: Keep Browser Alive
+        run: |
+
+          echo "🟢 مرورگر فعال است."
+          echo "🟢 Recorder فعال است."
+          echo "🟢 وارد لینک Cloudflare شو."
+
+          while true; do
+
+            echo ""
+            echo "========== RECORDER LOG =========="
+
+            if [ -f recorder.log ]; then
+              tail -30 recorder.log
+            fi
+
+            echo "=================================="
+
+            docker ps
+
+            sleep 30
+
+          done
+
+      # ==================================================
+      # Upload recording
       # ==================================================
 
       - name: Upload Recording
@@ -420,17 +519,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: browser-recording
-          path: recording.json
-
-      # ==================================================
-      # 9. نگه داشتن Workflow
-      # ==================================================
-
-      - name: Keep Browser Alive
-        if: always()
-        run: |
-          while true; do
-            echo "🟢 Browser is running..."
-            docker ps
-            sleep 60
-          done
+          path: |
+            recording.json
+            recorder.log
