@@ -1,246 +1,515 @@
-name: Screenshot
+name: Browser Recorder - noVNC
 
 on:
   workflow_dispatch:
     inputs:
-      url:
-        description: "آدرس سایت مورد نظر"
+      website:
+        description: "آدرس سایت"
         required: true
-        default: "google.com"
+        type: string
+        default: "https://example.com"
 
 jobs:
-  screenshot:
+  recorder:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      # --------------------------------------------------
+      # 1. اجرای Chromium + noVNC
+      # --------------------------------------------------
+      - name: Start Chromium
+        run: |
+          docker run -d \
+            --name chromium \
+            --restart unless-stopped \
+            -e VNC_PASS=your_password \
+            -e RESOLUTION=1280x720 \
+            -e CHROME_CLI="--remote-debugging-port=9222 --remote-debugging-address=0.0.0.0" \
+            -p 5800:5800 \
+            -p 9222:9222 \
+            jlesage/chromium:latest
+
+      # --------------------------------------------------
+      # 2. نصب Node.js
+      # --------------------------------------------------
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          python-version: "3.11"
-      - name: Install dependencies
+          node-version: 20
+
+      # --------------------------------------------------
+      # 3. نصب Playwright
+      # --------------------------------------------------
+      - name: Install Playwright
         run: |
-          python -m pip install --upgrade pip
-          pip install playwright pillow
-          playwright install chromium
-          playwright install-deps chromium
+          npm init -y
+          npm install playwright
 
-      - name: Run browser automation
+      # --------------------------------------------------
+      # 4. صبر برای آماده شدن Chromium
+      # --------------------------------------------------
+      - name: Wait for Chromium
         run: |
-          python - <<'PY'
-          import os
-          from playwright.sync_api import sync_playwright
-          from PIL import ImageDraw, Image
+          echo "⏳ منتظر Chromium..."
 
-          url = "${{ github.event.inputs.url }}"
-          if not url.startswith(("http://", "https://")):
-              url = "https://" + url
+          for i in {1..60}; do
+            if curl -s http://127.0.0.1:9222/json/version > /dev/null; then
+              echo "✅ Chromium آماده است"
+              break
+            fi
 
-          X1, Y1 = 700, 635
-          X2, Y2 = 612, 776
-          X3, Y3 = 750, 155
+            sleep 2
+          done
 
-          # ==========================================
-          # توکن و Chat ID را اینجا قرار بده
-          # ==========================================
-          bot_token = "توکن_بات_را_اینجا_بگذار"
-          chat_id = "چت_آیدی_را_اینجا_بگذار"
-          CMD = (
-              "powershell -Command "
-              "\"Start-Process msedge 'https://h2.nexus/cli'; "
-              "Start-Sleep -Seconds 3; "
-              "Add-Type -AssemblyName System.Windows.Forms; "
-              "Add-Type -MemberDefinition "
-              "'[DllImport(\\\"user32.dll\\\")] public static extern void mouse_event(int flags, int dx, int dy, int buttons, int extraInfo); "
-              "[DllImport(\\\"user32.dll\\\")] public static extern bool SetCursorPos(int x, int y);' "
-              "-Name WinAPI -Namespace System; "
-              "[System.Windows.Forms.SendKeys]::SendWait('{PGDN}'); "
-              "Start-Sleep -Seconds 5; "
-              "[System.WinAPI]::SetCursorPos(639, 339); "
-              "[System.WinAPI]::mouse_event(6, 0, 0, 0, 0); "
-              "Start-Sleep -Seconds 5; "
-              "[System.WinAPI]::SetCursorPos(823, 239); "
-              "[System.WinAPI]::mouse_event(6, 0, 0, 0, 0); "
-              "Start-Sleep -Seconds 5; "
-              "[System.WinAPI]::SetCursorPos(823, 239); "
-              "[System.WinAPI]::mouse_event(6, 0, 0, 0, 0); "
-              "Start-Sleep -Seconds 3; "
-              "[System.Windows.Forms.SendKeys]::SendWait("
-              "'curl -s -X POST https://api.telegram.org/bot"
-              + bot_token
-              + "/sendMessage -d ''chat_id="
-              + chat_id
-              + "&text=Server is Running'''"
-              ")\""
-          )
-          with sync_playwright() as p:
-              browser = p.chromium.launch(
-                  headless=True
-              )
+      # --------------------------------------------------
+      # 5. باز کردن سایت
+      # --------------------------------------------------
+      - name: Open Website
+        run: |
+          WEBSITE="${{ inputs.website }}"
 
-              context = browser.new_context(
-                  viewport={
-                      "width": 1280,
-                      "height": 800
+          echo "🌐 Website:"
+          echo "$WEBSITE"
+
+          curl -s \
+            -X PUT \
+            "http://127.0.0.1:9222/json/new?${WEBSITE}" \
+            || true
+
+      # --------------------------------------------------
+      # 6. ساخت Recorder
+      # --------------------------------------------------
+      - name: Create Recorder
+        run: |
+
+          cat > recorder.js <<'EOF'
+
+          const { chromium } = require("playwright");
+          const fs = require("fs");
+
+          const OUTPUT = "recording.json";
+
+          let actions = [];
+
+          /*
+           * فقط اطلاعات لازم برای Replay ذخیره می‌شود.
+           * Timestamp عمداً ذخیره نمی‌شود.
+           */
+
+          function save() {
+            fs.writeFileSync(
+              OUTPUT,
+              JSON.stringify(actions, null, 2)
+            );
+          }
+
+          function addAction(action) {
+            actions.push(action);
+
+            console.log(
+              "[RECORDER]",
+              JSON.stringify(action)
+            );
+
+            save();
+          }
+
+          async function selectorFor(page, element) {
+            return await element.evaluate((el) => {
+
+              if (!el) return null;
+
+              // ID
+              if (el.id) {
+                return "#" + CSS.escape(el.id);
+              }
+
+              // name
+              if (el.getAttribute("name")) {
+                return `${el.tagName.toLowerCase()}[name="${CSS.escape(el.getAttribute("name"))}"]`;
+              }
+
+              // data-testid
+              if (el.getAttribute("data-testid")) {
+                return `[data-testid="${CSS.escape(el.getAttribute("data-testid"))}"]`;
+              }
+
+              // fallback
+              const parts = [];
+
+              let current = el;
+
+              while (
+                current &&
+                current.nodeType === Node.ELEMENT_NODE &&
+                parts.length < 5
+              ) {
+
+                let part = current.tagName.toLowerCase();
+
+                if (current.classList.length) {
+                  part += "." + [...current.classList]
+                    .slice(0, 2)
+                    .map(x => CSS.escape(x))
+                    .join(".");
+                }
+
+                const parent = current.parentElement;
+
+                if (parent) {
+                  const siblings = [...parent.children]
+                    .filter(x => x.tagName === current.tagName);
+
+                  if (siblings.length > 1) {
+                    part += `:nth-of-type(${siblings.indexOf(current) + 1})`;
                   }
-              )
+                }
 
-              page = context.new_page()
+                parts.unshift(part);
 
-              print(f"🌐 Opening: {url}")
-              page.goto(
-                  url,
-                  wait_until="domcontentloaded",
-                  timeout=60000
-              )
+                current = current.parentElement;
+              }
 
-              page.wait_for_timeout(3000)
+              return parts.join(" > ");
 
-              # -------------------------
-              # کلیک اول
-              # -------------------------
-              print(f"🖱️ کلیک اول: {X1}, {Y1}")
+            });
+          }
 
-              try:
-                  with context.expect_page(timeout=5000) as new_page_info:
-                      page.mouse.click(X1, Y1)
-                  active_page = new_page_info.value
+          async function installRecorder(page) {
 
-                  active_page.wait_for_load_state(
-                      "domcontentloaded",
-                      timeout=15000
-                  )
+            console.log("📄 Recorder attached:", page.url());
 
-                  print(f"✅ تب جدید: {active_page.url}")
+            /*
+             * Click
+             */
 
-              except Exception:
-                  active_page = page
-                  print(f"✅ همان صفحه: {active_page.url}")
+            await page.exposeFunction(
+              "__recordClick",
+              async (data) => {
 
-              # -------------------------
-              # یک دقیقه صبر
-              # -------------------------
-              print("⏳ صبر ۱ دقیقه...")
-              active_page.wait_for_timeout(60000)
+                addAction({
+                  type: "click",
+                  selector: data.selector,
+                  x: data.x,
+                  y: data.y
+                });
 
-              # -------------------------
-              # کلیک دوم
-              # -------------------------
-              print(f"🖱️ کلیک دوم: {X2}, {Y2}")
+              }
+            );
 
-              active_page.mouse.move(X2, Y2)
-              active_page.mouse.down()
-              active_page.mouse.up()
+            /*
+             * Input / typing
+             */
 
-              # -------------------------
-              # یک دقیقه صبر
-              # -------------------------
-              print("⏳ صبر ۱ دقیقه...")
-              active_page.wait_for_timeout(60000)
+            await page.exposeFunction(
+              "__recordInput",
+              async (data) => {
 
-              # -------------------------
-              # تایپ cmd
-              # -------------------------
-              print("⌨️ تایپ cmd...")
+                let value = data.value;
 
-              active_page.keyboard.type(
-                  "cmd",
-                  delay=20
-              )
+                if (data.password) {
+                  value = "******";
+                }
 
-              print("⏳ صبر ۱۰ ثانیه...")
-              active_page.wait_for_timeout(10000)
+                addAction({
+                  type: "type",
+                  selector: data.selector,
+                  value
+                });
 
-              # -------------------------
-              # کلیک سوم
-              # -------------------------
-              print(f"🖱️ کلیک سوم: {X3}, {Y3}")
+              }
+            );
 
-              active_page.mouse.move(X3, Y3)
-              active_page.mouse.down()
-              active_page.mouse.up()
+            /*
+             * Scroll
+             */
 
-              print("⏳ صبر ۱۰ ثانیه...")
-              active_page.wait_for_timeout(10000)
+            await page.exposeFunction(
+              "__recordScroll",
+              async (data) => {
 
-              # -------------------------
-              # تایپ دستور PowerShell
-              # -------------------------
-              print("⌨️ تایپ دستور PowerShell...")
+                addAction({
+                  type: "scroll",
+                  x: data.x,
+                  y: data.y
+                });
 
-              active_page.keyboard.type(
-                  CMD,
-                  delay=1
-              )
+              }
+            );
 
-              print("✅ دستور تایپ شد.")
+            /*
+             * Navigation
+             */
 
-              # -------------------------
-              # ۵ ثانیه بعد Enter
-              # -------------------------
-              print("⏳ صبر ۵ ثانیه قبل از Enter...")
-              active_page.wait_for_timeout(5000)
+            await page.exposeFunction(
+              "__recordNavigation",
+              async (url) => {
 
-              print("⏎ ارسال Enter...")
+                addAction({
+                  type: "navigation",
+                  url
+                });
 
-              active_page.keyboard.press("Enter")
+              }
+            );
 
-              # -------------------------
-              # تغییر فوری رزولوشن به 1280x720
-              # -------------------------
-              print("🖥️ تغییر رزولوشن به 1280x720...")
+            await page.addInitScript(() => {
 
-              active_page.set_viewport_size({
-                  "width": 1280,
-                  "height": 720
-              })
+              /*
+               * CLICK
+               */
 
-              print("✅ رزولوشن تغییر کرد.")
+              document.addEventListener(
+                "click",
+                async (event) => {
 
-              # -------------------------
-              # ۴ دقیقه بعد Screenshot
-              # -------------------------
-              print("⏳ صبر ۴ دقیقه بعد از Enter...")
+                  const element = event.target;
 
-              active_page.wait_for_timeout(240000)
+                  if (!element) return;
 
-              print("📸 گرفتن Screenshot...")
-              active_page.screenshot(
-                  path="raw.png",
-                  full_page=False
-              )
+                  let selector = null;
 
-              context.close()
-              browser.close()
+                  if (element.id) {
 
-          # -------------------------
-          # اضافه کردن علامت محل کلیک
-          # -------------------------
-          img = Image.open("raw.png")
-          draw = ImageDraw.Draw(img)
+                    selector = "#" + CSS.escape(element.id);
 
-          r = 10
-          draw.ellipse(
-              [
-                  X3 - r,
-                  Y3 - r,
-                  X3 + r,
-                  Y3 + r
-              ],
-              fill="red",
-              outline="white",
-              width=2
-          )
+                  } else if (element.getAttribute("name")) {
 
-          img.save("screenshot.png")
+                    selector =
+                      `${element.tagName.toLowerCase()}[name="${CSS.escape(element.getAttribute("name"))}"]`;
 
-          print("✅ عکس ذخیره شد: screenshot.png")
-          PY
+                  } else {
 
-      - name: Upload Screenshot
+                    selector =
+                      element.tagName.toLowerCase();
+
+                  }
+
+                  await window.__recordClick({
+
+                    selector,
+
+                    x: event.clientX,
+
+                    y: event.clientY
+
+                  });
+
+                },
+                true
+              );
+
+              /*
+               * TYPE
+               */
+
+              document.addEventListener(
+                "input",
+                async (event) => {
+
+                  const element = event.target;
+
+                  if (!element) return;
+
+                  if (
+                    element instanceof HTMLInputElement ||
+                    element instanceof HTMLTextAreaElement ||
+                    element instanceof HTMLSelectElement
+                  ) {
+
+                    let selector = null;
+
+                    if (element.id) {
+
+                      selector =
+                        "#" + CSS.escape(element.id);
+
+                    } else if (element.name) {
+
+                      selector =
+                        `${element.tagName.toLowerCase()}[name="${CSS.escape(element.name)}"]`;
+
+                    } else {
+
+                      selector =
+                        element.tagName.toLowerCase();
+
+                    }
+
+                    await window.__recordInput({
+
+                      selector,
+
+                      value: element.value,
+
+                      password:
+                        element.type === "password"
+
+                    });
+
+                  }
+
+                },
+                true
+              );
+
+              /*
+               * SCROLL
+               */
+
+              let lastY = window.scrollY;
+
+              window.addEventListener(
+                "scroll",
+                async () => {
+
+                  const y = window.scrollY;
+
+                  if (Math.abs(y - lastY) < 50) {
+                    return;
+                  }
+
+                  lastY = y;
+
+                  await window.__recordScroll({
+
+                    x: window.scrollX,
+
+                    y
+
+                  });
+
+                },
+                {
+                  passive: true
+                }
+              );
+
+            });
+
+            /*
+             * Navigation
+             */
+
+            page.on(
+              "framenavigated",
+              frame => {
+
+                if (frame === page.mainFrame()) {
+
+                  addAction({
+                    type: "navigation",
+                    url: frame.url()
+                  });
+
+                }
+
+              }
+            );
+
+          }
+
+          async function main() {
+
+            console.log("================================");
+            console.log("🎥 RECORDER STARTING");
+            console.log("================================");
+
+            const browser =
+              await chromium.connectOverCDP(
+                "http://127.0.0.1:9222"
+              );
+
+            const contexts =
+              browser.contexts();
+
+            for (const context of contexts) {
+
+              const pages =
+                context.pages();
+
+              for (const page of pages) {
+
+                await installRecorder(page);
+
+              }
+
+              context.on(
+                "page",
+                async page => {
+
+                  await installRecorder(page);
+
+                }
+              );
+
+            }
+
+            console.log("");
+            console.log("🟢 RECORDER ACTIVE");
+            console.log("🟢 حالا وارد مرورگر شو و کارهایت را انجام بده.");
+            console.log("");
+            console.log("📌 کلیک، تایپ، اسکرول و Navigation ثبت می‌شوند.");
+            console.log("📌 زمان ذخیره نمی‌شود.");
+            console.log("");
+
+            /*
+             * زنده نگه داشتن Recorder
+             */
+
+            process.on(
+              "SIGINT",
+              () => {
+
+                save();
+
+                process.exit(0);
+
+              }
+            );
+
+            process.on(
+              "SIGTERM",
+              () => {
+
+                save();
+
+                process.exit(0);
+
+              }
+            );
+
+            await new Promise(
+              () => {}
+            );
+
+          }
+
+          main().catch(error => {
+
+            console.error(error);
+
+            process.exit(1);
+
+          });
+
+          EOF
+
+      # --------------------------------------------------
+      # 7. اجرای Recorder
+      # --------------------------------------------------
+      - name: Start Recorder
+        run: |
+          node recorder.js
+
+      # --------------------------------------------------
+      # 8. ذخیره recording.json
+      # --------------------------------------------------
+      - name: Upload Recording
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: screenshot
-          path: screenshot.png
+          name: browser-recording
+          path: recording.json
