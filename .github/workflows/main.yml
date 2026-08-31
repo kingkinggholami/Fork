@@ -1,4 +1,4 @@
-name: اجرای مرورگر با noVNC (Cloudflare Tunnel) + ضبط حرکات
+name: اجرای مرورگر با noVNC + ضبط حرکات
 
 on:
   workflow_dispatch:
@@ -9,14 +9,14 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: اجرای کانتینر کروم با قابلیت دیباگ از راه دور
+      - name: اجرای کانتینر کروم با دیباگ
         run: |
           docker run -d \
             --name chromium \
             --restart unless-stopped \
             -e VNC_PASS=your_password \
             -e RESOLUTION=1280x720 \
-            -e CHROMIUM_OPTS="--remote-debugging-port=9222 --remote-debugging-address=0.0.0.0 --no-sandbox --disable-gpu --disable-dev-shm-usage" \
+            -e CHROMIUM_OPTS="--remote-debugging-port=9222 --remote-debugging-address=0.0.0.0 --no-sandbox" \
             -p 5800:5800 \
             -p 9222:9222 \
             jlesage/chromium:latest
@@ -26,12 +26,22 @@ jobs:
           curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
           sudo dpkg -i cloudflared.deb
 
+      - name: نصب ابزارهای مورد نیاز و بررسی پورت دیباگ
+        run: |
+          echo "⏳ منتظر آماده شدن کانتینر..."
+          sleep 20
+          echo "🔍 بررسی پورت 9222..."
+          # نصب net-tools داخل کانتینر
+          docker exec chromium apk add --no-cache net-tools 2>/dev/null || true
+          docker exec chromium netstat -tulpn | grep 9222 || echo "⚠️ پورت 9222 باز نیست!"
+          docker exec chromium ps aux | grep chromium || echo "⚠️ فرآیند کروم پیدا نشد!"
+
       - name: نصب Node.js و puppeteer-core
         run: |
           npm init -y
           npm install puppeteer-core
 
-      - name: ایجاد اسکریپت ضبط حرکات
+      - name: ایجاد اسکریپت ضبط حرکات (با بازیابی خودکار)
         run: |
           cat > recorder.js << 'EOF'
           const puppeteer = require('puppeteer-core');
@@ -47,11 +57,11 @@ jobs:
                 return browser;
               } catch (e) {
                 attempts++;
-                console.log(`⏳ در انتظار آماده‌سازی دیباگر کروم (تلاش ${attempts}/۳۰)...`);
-                await new Promise(r => setTimeout(r, 2000));
+                console.log(`⏳ در انتظار دیباگر (تلاش ${attempts}/۳۰)...`);
+                await new Promise(r => setTimeout(r, 3000));
               }
             }
-            throw new Error('امکان اتصال به دیباگر کروم وجود ندارد');
+            throw new Error('امکان اتصال به دیباگر وجود ندارد');
           }
 
           (async () => {
@@ -60,13 +70,10 @@ jobs:
             console.log('✅ اتصال برقرار شد');
 
             function setupPage(page) {
-              // تزریق اسکریپت ضبط به هر صفحه جدید
               page.evaluateOnNewDocument(() => {
                 const logEvent = (type, data) => {
                   console.log(JSON.stringify({ type, data, time: Date.now() }));
                 };
-
-                // ثبت کلیک
                 document.addEventListener('click', (e) => {
                   logEvent('click', {
                     tag: e.target.tagName,
@@ -77,8 +84,6 @@ jobs:
                     path: e.composedPath ? e.composedPath().slice(0, 5).map(el => el.tagName).join(' > ') : '',
                   });
                 }, true);
-
-                // ثبت فشردن کلید
                 document.addEventListener('keydown', (e) => {
                   logEvent('keydown', {
                     key: e.key,
@@ -87,8 +92,6 @@ jobs:
                     value: e.target.value || '',
                   });
                 }, true);
-
-                // ثبت اسکرول
                 document.addEventListener('scroll', (e) => {
                   logEvent('scroll', {
                     target: e.target.tagName,
@@ -100,77 +103,51 @@ jobs:
                 }, true);
               });
 
-              // شنود کنسول صفحات برای دریافت لاگ‌ها
               page.on('console', (msg) => {
                 if (msg.type() === 'log') {
                   const text = msg.text();
                   try {
                     const event = JSON.parse(text);
                     console.log(`[${event.type}]`, JSON.stringify(event.data));
-                  } catch (e) {
-                    // لاگ‌های غیر JSON نادیده گرفته می‌شوند
-                  }
+                  } catch (e) { /* ignore */ }
                 }
               });
             }
 
-            // اعمال روی صفحات موجود
             const pages = await browser.pages();
-            for (const page of pages) {
-              await setupPage(page);
-            }
+            for (const page of pages) await setupPage(page);
 
-            // اعمال روی صفحات جدید
             browser.on('targetcreated', async (target) => {
               if (target.type() === 'page') {
                 const page = await target.page();
-                if (page) {
-                  await setupPage(page);
-                }
+                if (page) await setupPage(page);
               }
             });
 
-            console.log('🟢 ضبط‌کننده فعال است. تمام حرکات شما در مرورگر ثبت خواهد شد.');
-            // نگه‌داری اسکریپت
+            console.log('🟢 ضبط‌کننده فعال است.');
             await new Promise(() => {});
           })();
           EOF
 
-      - name: اجرای ضبط‌کننده و تونل Cloudflare
+      - name: اجرای ضبط‌کننده و تونل
         run: |
-          echo "⏳ منتظر آماده شدن کروم..."
-          sleep 15
-
-          # اجرای اسکریپت ضبط در پس‌زمینه
           node recorder.js &
           RECORDER_PID=$!
+          sleep 5
 
-          # صبر برای اتصال ضبط‌کننده
-          sleep 10
-
-          echo "✅ ضبط‌کننده راه‌اندازی شد."
-
-          # اجرای تونل Cloudflare
           cloudflared tunnel \
             --url http://localhost:5800 \
             --no-autoupdate > /tmp/cloudflared.log 2>&1 &
           CLOUDFLARE_PID=$!
 
           sleep 10
+          echo "===== آدرس دسترسی ====="
+          grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' /tmp/cloudflared.log || echo "⚠️ آدرس پیدا نشد"
+          echo "======================="
 
-          echo "===== آدرس دسترسی به مرورگر ====="
-          grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' /tmp/cloudflared.log || echo "⚠️ آدرس پیدا نشد، بعداً دوباره تلاش کنید"
-          echo "================================="
-
-          # نمایش لاگ‌های تونل در پس‌زمینه (اختیاری)
           tail -f /tmp/cloudflared.log &
-
-          echo "🟢 همه سرویس‌ها فعال هستند. می‌توانید از آدرس بالا به مرورگر متصل شوید."
-          echo "🟢 تمام کلیک‌ها، تایپ‌ها و اسکرول‌ها در لاگ‌های این مرحله ثبت می‌شوند."
-
-          # حلقه نگه‌داری تا پایان زمان
           while true; do
-            echo "💚 مرورگر و تونل و ضبط‌کننده در حال اجرا..."
+            echo "💚 سرویس‌ها فعال هستند..."
             docker ps
             sleep 60
           done
