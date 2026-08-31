@@ -1,4 +1,4 @@
-```yaml
+
 name: اجرای Chromium با noVNC + ضبط حرکات X11
 
 on:
@@ -307,4 +307,3 @@ SCRIPT
           path: artifacts/
           if-no-files-found: warn
           retention-days: 7
-```
