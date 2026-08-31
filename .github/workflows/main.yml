@@ -17,125 +17,229 @@ jobs:
     steps:
 
       # ==================================================
-      # Chromium + noVNC
+      # 1. Start Chromium + noVNC + CDP
       # ==================================================
-
       - name: Start Chromium
         run: |
           docker run -d \
             --name chromium \
             --restart unless-stopped \
-            -e VNC_PASS=your_password \
-            -e RESOLUTION=1280x720 \
-            -e ENABLE_CDP=1 \
-            -e CDP_PORT=9222 \
+            -e VNC_PASSWORD=your_password \
+            -e DISPLAY_WIDTH=1280 \
+            -e DISPLAY_HEIGHT=720 \
+            -e CHROMIUM_REMOTE_DEBUGGING=1 \
+            -e CHROMIUM_REMOTE_DEBUGGING_PORT=9222 \
             -p 5800:5800 \
             -p 9222:9222 \
             jlesage/chromium:latest
 
       # ==================================================
-      # Wait for noVNC
+      # 2. Show container status
       # ==================================================
+      - name: Check Chromium container
+        run: |
+          echo "========== DOCKER =========="
+          docker ps
+          echo "============================"
 
+          echo "========== CHROMIUM LOGS =========="
+          docker logs chromium || true
+          echo "==================================="
+
+      # ==================================================
+      # 3. Wait for noVNC
+      # ==================================================
       - name: Wait for noVNC
         run: |
           echo "⏳ منتظر noVNC..."
 
           for i in {1..60}; do
-            if curl -fs http://127.0.0.1:5800 > /dev/null 2>&1; then
+
+            if curl -fsS http://127.0.0.1:5800/ > /dev/null 2>&1; then
               echo "✅ noVNC آماده است"
               break
             fi
 
-            echo "⏳ تلاش $i/60"
+            echo "⏳ noVNC هنوز آماده نیست... $i/60"
             sleep 2
+
+            if [ "$i" -eq 60 ]; then
+              echo "❌ noVNC در زمان مشخص آماده نشد"
+              docker logs chromium || true
+              exit 1
+            fi
+
           done
 
-          echo ""
-          echo "========== DOCKER =========="
-          docker ps
-          echo "============================"
-
       # ==================================================
-      # Debug Chromium
+      # 4. Wait for Chrome DevTools Protocol
       # ==================================================
-
-      - name: Chromium logs
-        run: |
-          echo "========== CHROMIUM LOGS =========="
-          docker logs --tail 200 chromium || true
-          echo "==================================="
-
-      # ==================================================
-      # Wait for CDP
-      # ==================================================
-
-      - name: Wait for CDP
+      - name: Wait for Chrome DevTools Protocol
         run: |
           echo "⏳ منتظر Chrome DevTools Protocol..."
 
           for i in {1..90}; do
 
-            if curl -fs \
+            if curl -fsS \
               http://127.0.0.1:9222/json/version \
-              > /tmp/cdp.json 2>/dev/null
-            then
+              > /tmp/cdp-version.json 2>/dev/null; then
 
-              echo ""
-              echo "================================"
-              echo "✅ CDP آماده است"
-              echo "================================"
-              cat /tmp/cdp.json
-              echo ""
+              echo "======================================"
+              echo "✅ Chrome DevTools Protocol آماده است"
+              echo "======================================"
+
+              cat /tmp/cdp-version.json
 
               exit 0
             fi
 
             echo "⏳ CDP هنوز آماده نیست... $i/90"
-
             sleep 2
+
           done
 
           echo ""
-          echo "❌ CDP بعد از 180 ثانیه آماده نشد."
+          echo "❌ CDP در 180 ثانیه آماده نشد"
           echo ""
 
-          echo "========== PORT 9222 =========="
-          curl -v http://127.0.0.1:9222/json/version || true
-          echo "==============================="
+          echo "========== DOCKER =========="
+          docker ps
+          echo "============================"
 
           echo ""
           echo "========== CHROMIUM LOGS =========="
-          docker logs --tail 300 chromium || true
+          docker logs chromium || true
           echo "==================================="
 
           exit 1
 
       # ==================================================
-      # Node
+      # 5. Setup Node.js
       # ==================================================
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 24
 
       # ==================================================
-      # Playwright
+      # 6. Install Playwright
       # ==================================================
-
       - name: Install Playwright
         run: |
           npm init -y
           npm install playwright
 
       # ==================================================
-      # Create Recorder
+      # 7. Open requested website
       # ==================================================
+      - name: Open Website
+        run: |
+          WEBSITE="${{ inputs.website }}"
 
+          # اگر کاربر https/http ننوشته باشد
+          if [[ "$WEBSITE" != http://* && "$WEBSITE" != https://* ]]; then
+            WEBSITE="https://$WEBSITE"
+          fi
+
+          echo "🌐 Website:"
+          echo "$WEBSITE"
+
+          echo ""
+          echo "⏳ باز کردن سایت..."
+
+          curl -fsS \
+            -X PUT \
+            --data-urlencode "url=$WEBSITE" \
+            "http://127.0.0.1:9222/json/new" \
+            || true
+
+          sleep 3
+
+          echo ""
+          echo "========== OPEN PAGES =========="
+
+          curl -fsS \
+            http://127.0.0.1:9222/json/list \
+            || true
+
+          echo ""
+          echo "================================"
+
+      # ==================================================
+      # 8. Install Cloudflare Tunnel
+      # ==================================================
+      - name: Install Cloudflared
+        run: |
+          echo "⏳ نصب cloudflared..."
+
+          curl -fsSL \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb \
+            -o cloudflared.deb
+
+          sudo dpkg -i cloudflared.deb
+
+          cloudflared --version
+
+      # ==================================================
+      # 9. Start Cloudflare Tunnel
+      # ==================================================
+      - name: Start Cloudflare Tunnel
+        run: |
+          echo "⏳ شروع Cloudflare Tunnel..."
+
+          cloudflared tunnel \
+            --url http://127.0.0.1:5800 \
+            --no-autoupdate \
+            > /tmp/cloudflared.log 2>&1 &
+
+          CLOUDFLARED_PID=$!
+
+          echo "$CLOUDFLARED_PID" > /tmp/cloudflared.pid
+
+          echo "⏳ منتظر URL..."
+
+          TUNNEL_URL=""
+
+          for i in {1..60}; do
+
+            TUNNEL_URL=$(grep -oE \
+              'https://[-a-zA-Z0-9]+\.trycloudflare\.com' \
+              /tmp/cloudflared.log \
+              | head -n 1 || true)
+
+            if [ -n "$TUNNEL_URL" ]; then
+              break
+            fi
+
+            echo "⏳ هنوز URL ساخته نشده... $i/60"
+            sleep 2
+
+          done
+
+          echo ""
+          echo "=========================================="
+          echo "🌐 NO VNC URL"
+          echo "=========================================="
+          echo "$TUNNEL_URL"
+          echo "=========================================="
+          echo ""
+          echo "🔐 VNC Password: your_password"
+          echo ""
+
+          if [ -z "$TUNNEL_URL" ]; then
+            echo "❌ Cloudflare Tunnel URL پیدا نشد"
+            echo ""
+            cat /tmp/cloudflared.log
+            exit 1
+          fi
+
+          echo "TUNNEL_URL=$TUNNEL_URL" >> "$GITHUB_ENV"
+
+      # ==================================================
+      # 10. Create Browser Recorder
+      # ==================================================
       - name: Create Recorder
         run: |
-
           cat > recorder.js <<'EOF'
 
           const { chromium } = require("playwright");
@@ -145,14 +249,26 @@ jobs:
 
           let actions = [];
 
+          // ----------------------------------------------
+          // Save recording
+          // ----------------------------------------------
+
           function save() {
-            fs.writeFileSync(
-              OUTPUT,
-              JSON.stringify(actions, null, 2)
-            );
+            try {
+              fs.writeFileSync(
+                OUTPUT,
+                JSON.stringify(actions, null, 2)
+              );
+            } catch (error) {
+              console.error("❌ Cannot save recording:", error);
+            }
           }
 
-          function record(action) {
+          // ----------------------------------------------
+          // Add action
+          // ----------------------------------------------
+
+          function addAction(action) {
 
             actions.push(action);
 
@@ -164,6 +280,113 @@ jobs:
             save();
           }
 
+          // ----------------------------------------------
+          // Generate selector
+          // ----------------------------------------------
+
+          async function getSelector(element) {
+
+            return await element.evaluate((el) => {
+
+              if (!el) {
+                return null;
+              }
+
+              // ID
+              if (el.id) {
+                return "#" + CSS.escape(el.id);
+              }
+
+              // data-testid
+              const testId =
+                el.getAttribute("data-testid");
+
+              if (testId) {
+                return `[data-testid="${CSS.escape(testId)}"]`;
+              }
+
+              // name
+              const name =
+                el.getAttribute("name");
+
+              if (name) {
+                return `${el.tagName.toLowerCase()}[name="${CSS.escape(name)}"]`;
+              }
+
+              // aria-label
+              const aria =
+                el.getAttribute("aria-label");
+
+              if (aria) {
+                return `${el.tagName.toLowerCase()}[aria-label="${CSS.escape(aria)}"]`;
+              }
+
+              // Build fallback selector
+              const parts = [];
+
+              let current = el;
+
+              while (
+                current &&
+                current.nodeType === Node.ELEMENT_NODE &&
+                parts.length < 5
+              ) {
+
+                let part =
+                  current.tagName.toLowerCase();
+
+                if (current.classList.length) {
+
+                  const classes =
+                    [...current.classList]
+                      .slice(0, 2)
+                      .map(x => CSS.escape(x))
+                      .join(".");
+
+                  if (classes) {
+                    part += "." + classes;
+                  }
+                }
+
+                const parent =
+                  current.parentElement;
+
+                if (parent) {
+
+                  const siblings =
+                    [...parent.children]
+                      .filter(
+                        x =>
+                          x.tagName ===
+                          current.tagName
+                      );
+
+                  if (siblings.length > 1) {
+
+                    const index =
+                      siblings.indexOf(current) + 1;
+
+                    part +=
+                      `:nth-of-type(${index})`;
+                  }
+                }
+
+                parts.unshift(part);
+
+                current =
+                  current.parentElement;
+              }
+
+              return parts.join(" > ");
+
+            });
+
+          }
+
+          // ----------------------------------------------
+          // Install recorder into page
+          // ----------------------------------------------
+
           async function installRecorder(page) {
 
             console.log(
@@ -171,349 +394,589 @@ jobs:
               page.url()
             );
 
-            await page.exposeFunction(
-              "__recordAction",
-              data => {
+            // Avoid installing twice
+            try {
 
-                record(data);
+              await page.exposeFunction(
+                "__recordClick",
+                async data => {
 
-              }
-            );
-
-            await page.addInitScript(() => {
-
-              function selector(el) {
-
-                if (!el) {
-                  return null;
-                }
-
-                if (el.id) {
-                  return "#" + CSS.escape(el.id);
-                }
-
-                if (el.name) {
-
-                  return (
-                    el.tagName.toLowerCase() +
-                    '[name="' +
-                    CSS.escape(el.name) +
-                    '"]'
-                  );
-
-                }
-
-                if (el.getAttribute("data-testid")) {
-
-                  return (
-                    '[data-testid="' +
-                    CSS.escape(
-                      el.getAttribute("data-testid")
-                    ) +
-                    '"]'
-                  );
-
-                }
-
-                return el.tagName.toLowerCase();
-
-              }
-
-              // ------------------------------------------
-              // CLICK
-              // ------------------------------------------
-
-              document.addEventListener(
-                "click",
-                event => {
-
-                  const el = event.target;
-
-                  window.__recordAction({
-
+                  addAction({
                     type: "click",
-
-                    selector: selector(el),
-
-                    x: event.clientX,
-
-                    y: event.clientY
-
+                    selector: data.selector,
+                    x: data.x,
+                    y: data.y
                   });
 
-                },
-                true
-              );
-
-              // ------------------------------------------
-              // TYPE
-              // ------------------------------------------
-
-              document.addEventListener(
-                "input",
-                event => {
-
-                  const el = event.target;
-
-                  if (!el) {
-                    return;
-                  }
-
-                  if (
-                    el instanceof HTMLInputElement ||
-                    el instanceof HTMLTextAreaElement ||
-                    el instanceof HTMLSelectElement
-                  ) {
-
-                    const isPassword =
-                      el.type === "password";
-
-                    window.__recordAction({
-
-                      type: "type",
-
-                      selector: selector(el),
-
-                      value:
-                        isPassword
-                          ? "******"
-                          : el.value
-
-                    });
-
-                  }
-
-                },
-                true
-              );
-
-              // ------------------------------------------
-              // SCROLL
-              // ------------------------------------------
-
-              let lastX = window.scrollX;
-              let lastY = window.scrollY;
-
-              window.addEventListener(
-                "scroll",
-                () => {
-
-                  const x = window.scrollX;
-                  const y = window.scrollY;
-
-                  if (
-                    Math.abs(x - lastX) < 50 &&
-                    Math.abs(y - lastY) < 50
-                  ) {
-                    return;
-                  }
-
-                  lastX = x;
-                  lastY = y;
-
-                  window.__recordAction({
-
-                    type: "scroll",
-
-                    x,
-                    y
-
-                  });
-
-                },
-                {
-                  passive: true
                 }
               );
 
-            });
+            } catch (e) {
+              // Function may already exist
+            }
+
+            try {
+
+              await page.exposeFunction(
+                "__recordInput",
+                async data => {
+
+                  let value = data.value;
+
+                  // Do not save password values
+                  if (data.password) {
+                    value = "******";
+                  }
+
+                  addAction({
+                    type: "type",
+                    selector: data.selector,
+                    value
+                  });
+
+                }
+              );
+
+            } catch (e) {
+              // Function may already exist
+            }
+
+            try {
+
+              await page.exposeFunction(
+                "__recordScroll",
+                async data => {
+
+                  addAction({
+                    type: "scroll",
+                    x: data.x,
+                    y: data.y
+                  });
+
+                }
+              );
+
+            } catch (e) {
+              // Function may already exist
+            }
 
             // ------------------------------------------
-            // NAVIGATION
+            // Inject recorder into CURRENT document
             // ------------------------------------------
 
+            async function inject() {
+
+              try {
+
+                await page.evaluate(() => {
+
+                  if (window.__BROWSER_RECORDER_INSTALLED) {
+                    return;
+                  }
+
+                  window.__BROWSER_RECORDER_INSTALLED = true;
+
+                  // ------------------------------------
+                  // Selector
+                  // ------------------------------------
+
+                  function selectorFor(el) {
+
+                    if (!el) {
+                      return null;
+                    }
+
+                    if (el.id) {
+                      return "#" + CSS.escape(el.id);
+                    }
+
+                    const testId =
+                      el.getAttribute("data-testid");
+
+                    if (testId) {
+                      return `[data-testid="${CSS.escape(testId)}"]`;
+                    }
+
+                    const name =
+                      el.getAttribute("name");
+
+                    if (name) {
+                      return `${el.tagName.toLowerCase()}[name="${CSS.escape(name)}"]`;
+                    }
+
+                    const aria =
+                      el.getAttribute("aria-label");
+
+                    if (aria) {
+                      return `${el.tagName.toLowerCase()}[aria-label="${CSS.escape(aria)}"]`;
+                    }
+
+                    let current = el;
+                    const parts = [];
+
+                    while (
+                      current &&
+                      current.nodeType === Node.ELEMENT_NODE &&
+                      parts.length < 5
+                    ) {
+
+                      let part =
+                        current.tagName.toLowerCase();
+
+                      if (current.classList.length) {
+
+                        part += "." +
+                          [...current.classList]
+                            .slice(0, 2)
+                            .map(x => CSS.escape(x))
+                            .join(".");
+                      }
+
+                      const parent =
+                        current.parentElement;
+
+                      if (parent) {
+
+                        const siblings =
+                          [...parent.children]
+                            .filter(
+                              x =>
+                                x.tagName ===
+                                current.tagName
+                            );
+
+                        if (siblings.length > 1) {
+
+                          part +=
+                            `:nth-of-type(${siblings.indexOf(current) + 1})`;
+                        }
+                      }
+
+                      parts.unshift(part);
+
+                      current =
+                        current.parentElement;
+                    }
+
+                    return parts.join(" > ");
+                  }
+
+                  // ------------------------------------
+                  // CLICK
+                  // ------------------------------------
+
+                  document.addEventListener(
+                    "click",
+                    async event => {
+
+                      const element =
+                        event.target;
+
+                      if (!element) {
+                        return;
+                      }
+
+                      const selector =
+                        selectorFor(element);
+
+                      try {
+
+                        await window.__recordClick({
+                          selector,
+                          x: event.clientX,
+                          y: event.clientY
+                        });
+
+                      } catch (error) {
+
+                        console.error(
+                          "Recorder click error:",
+                          error
+                        );
+                      }
+
+                    },
+                    true
+                  );
+
+                  // ------------------------------------
+                  // INPUT / TYPING
+                  // ------------------------------------
+
+                  document.addEventListener(
+                    "input",
+                    async event => {
+
+                      const element =
+                        event.target;
+
+                      if (!element) {
+                        return;
+                      }
+
+                      if (
+                        element instanceof HTMLInputElement ||
+                        element instanceof HTMLTextAreaElement ||
+                        element instanceof HTMLSelectElement
+                      ) {
+
+                        const selector =
+                          selectorFor(element);
+
+                        try {
+
+                          await window.__recordInput({
+
+                            selector,
+
+                            value:
+                              element.value,
+
+                            password:
+                              element instanceof HTMLInputElement &&
+                              element.type === "password"
+
+                          });
+
+                        } catch (error) {
+
+                          console.error(
+                            "Recorder input error:",
+                            error
+                          );
+                        }
+                      }
+
+                    },
+                    true
+                  );
+
+                  // ------------------------------------
+                  // SCROLL
+                  // ------------------------------------
+
+                  let lastX =
+                    window.scrollX;
+
+                  let lastY =
+                    window.scrollY;
+
+                  let scrollTimer = null;
+
+                  window.addEventListener(
+                    "scroll",
+                    () => {
+
+                      clearTimeout(scrollTimer);
+
+                      scrollTimer =
+                        setTimeout(
+                          async () => {
+
+                            const x =
+                              window.scrollX;
+
+                            const y =
+                              window.scrollY;
+
+                            if (
+                              Math.abs(x - lastX) < 50 &&
+                              Math.abs(y - lastY) < 50
+                            ) {
+                              return;
+                            }
+
+                            lastX = x;
+                            lastY = y;
+
+                            try {
+
+                              await window.__recordScroll({
+                                x,
+                                y
+                              });
+
+                            } catch (error) {
+
+                              console.error(
+                                "Recorder scroll error:",
+                                error
+                              );
+                            }
+
+                          },
+                          150
+                        );
+
+                    },
+                    {
+                      passive: true
+                    }
+                  );
+
+                  console.log(
+                    "🟢 Browser Recorder injected"
+                  );
+
+                });
+
+              } catch (error) {
+
+                console.log(
+                  "⚠️ Could not inject recorder:",
+                  error.message
+                );
+              }
+            }
+
+            // Install into current page
+            await inject();
+
+            // Install again after every navigation
             page.on(
               "framenavigated",
-              frame => {
+              async frame => {
 
                 if (
                   frame === page.mainFrame()
                 ) {
 
-                  record({
+                  const url =
+                    frame.url();
 
+                  console.log(
+                    "[RECORDER] Navigation:",
+                    url
+                  );
+
+                  addAction({
                     type: "navigation",
-
-                    url: frame.url()
-
+                    url
                   });
 
-                }
+                  // Wait for document
+                  await page
+                    .waitForLoadState("domcontentloaded")
+                    .catch(() => {});
 
+                  await inject();
+                }
               }
             );
-
           }
+
+          // ----------------------------------------------
+          // Main
+          // ----------------------------------------------
 
           async function main() {
 
             console.log("");
-            console.log("================================");
-            console.log("🎥 RECORDER STARTING");
-            console.log("================================");
+            console.log("====================================");
+            console.log("🎥 BROWSER RECORDER STARTING");
+            console.log("====================================");
+            console.log("");
 
-            const browser =
-              await chromium.connectOverCDP(
-                "http://127.0.0.1:9222"
-              );
+            // Create recording file immediately
+            save();
 
-            console.log(
-              "✅ Connected to Chromium"
-            );
+            // ------------------------------------------
+            // Connect to Chromium CDP
+            // ------------------------------------------
+
+            let browser = null;
+
+            for (let i = 1; i <= 30; i++) {
+
+              try {
+
+                console.log(
+                  `⏳ Connecting to CDP... ${i}/30`
+                );
+
+                browser =
+                  await chromium.connectOverCDP(
+                    "http://127.0.0.1:9222"
+                  );
+
+                console.log(
+                  "✅ Connected to Chromium"
+                );
+
+                break;
+
+              } catch (error) {
+
+                console.log(
+                  "⚠️ CDP connection failed:",
+                  error.message
+                );
+
+                if (i === 30) {
+                  throw error;
+                }
+
+                await new Promise(
+                  resolve =>
+                    setTimeout(resolve, 2000)
+                );
+              }
+            }
+
+            // ------------------------------------------
+            // Existing contexts/pages
+            // ------------------------------------------
 
             const contexts =
               browser.contexts();
 
+            console.log(
+              `📦 Contexts: ${contexts.length}`
+            );
+
             for (const context of contexts) {
 
-              for (const page of context.pages()) {
+              const pages =
+                context.pages();
+
+              console.log(
+                `📄 Pages: ${pages.length}`
+              );
+
+              for (const page of pages) {
 
                 await installRecorder(page);
 
               }
 
+              // ----------------------------------------
+              // New pages / tabs
+              // ----------------------------------------
+
               context.on(
                 "page",
                 async page => {
+
+                  console.log(
+                    "🆕 New page:",
+                    page.url()
+                  );
 
                   await installRecorder(page);
 
                 }
               );
-
             }
 
-            save();
-
             console.log("");
-            console.log("================================");
+            console.log("====================================");
             console.log("🟢 RECORDER ACTIVE");
-            console.log("================================");
+            console.log("====================================");
             console.log("");
-            console.log("🖱️ Click = ثبت می‌شود");
-            console.log("⌨️ Type = ثبت می‌شود");
-            console.log("📜 Scroll = ثبت می‌شود");
-            console.log("🌐 Navigation = ثبت می‌شود");
-            console.log("⏱️ Timestamp = ذخیره نمی‌شود");
+            console.log(
+              "🖱️ کلیک‌ها ثبت می‌شوند"
+            );
+            console.log(
+              "⌨️ تایپ‌ها ثبت می‌شوند"
+            );
+            console.log(
+              "📜 اسکرول‌ها ثبت می‌شوند"
+            );
+            console.log(
+              "🌐 Navigation ثبت می‌شود"
+            );
+            console.log(
+              "⏱️ Timestamp ذخیره نمی‌شود"
+            );
             console.log("");
-            console.log("👤 حالا وارد noVNC شو و شروع کن.");
+            console.log(
+              "🌐 حالا وارد noVNC شو و کارهایت را انجام بده."
+            );
             console.log("");
 
-            // زنده نگه داشتن Recorder
+            // ------------------------------------------
+            // Graceful shutdown
+            // ------------------------------------------
 
+            const shutdown =
+              () => {
+
+                console.log("");
+                console.log(
+                  "🛑 Stopping recorder..."
+                );
+
+                save();
+
+                console.log(
+                  `💾 ${actions.length} actions saved.`
+                );
+
+                process.exit(0);
+              };
+
+            process.on(
+              "SIGINT",
+              shutdown
+            );
+
+            process.on(
+              "SIGTERM",
+              shutdown
+            );
+
+            // Keep process alive
             await new Promise(
               () => {}
             );
-
           }
 
-          main().catch(error => {
+          main().catch(
+            error => {
 
-            console.error(
-              "❌ Recorder error:",
-              error
-            );
+              console.error("");
+              console.error(
+                "❌ RECORDER ERROR"
+              );
 
-            process.exit(1);
+              console.error(error);
 
-          });
+              save();
+
+              process.exit(1);
+            }
+          );
 
           EOF
 
       # ==================================================
-      # Start Recorder in background
+      # 11. Start Recorder
       # ==================================================
-
       - name: Start Recorder
         run: |
-          node recorder.js > recorder.log 2>&1 &
-
-          echo $! > recorder.pid
-
-          sleep 3
+          echo "=========================================="
+          echo "🎥 STARTING BROWSER RECORDER"
+          echo "=========================================="
 
           echo ""
-          echo "========== RECORDER =========="
-          cat recorder.log
-          echo "=============================="
-
-      # ==================================================
-      # Cloudflare
-      # ==================================================
-
-      - name: Install cloudflared
-        run: |
-          curl -L \
-            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb \
-            -o cloudflared.deb
-
-          sudo dpkg -i cloudflared.deb
-
-      - name: Start Cloudflare Tunnel
-        run: |
-
-          cloudflared tunnel \
-            --url http://127.0.0.1:5800 \
-            --no-autoupdate \
-            > /tmp/cloudflared.log 2>&1 &
-
-          sleep 10
-
-          echo ""
-          echo "========================================"
-          echo "🌐 NO-VNC URL"
-          echo "========================================"
-
-          grep -o \
-            'https://[-a-zA-Z0-9]*\.trycloudflare\.com' \
-            /tmp/cloudflared.log \
-            | head -1 || true
-
-          echo "========================================"
+          echo "🌐 noVNC URL:"
+          echo "${TUNNEL_URL}"
           echo ""
 
-      # ==================================================
-      # Keep alive
-      # ==================================================
+          echo "🔐 Password:"
+          echo "your_password"
+          echo ""
 
-      - name: Keep Browser Alive
-        run: |
+          echo "=========================================="
+          echo "🟢 Recorder is starting..."
+          echo "=========================================="
+          echo ""
 
-          echo "🟢 مرورگر فعال است."
-          echo "🟢 Recorder فعال است."
-          echo "🟢 وارد لینک Cloudflare شو."
-
-          while true; do
-
-            echo ""
-            echo "========== RECORDER LOG =========="
-
-            if [ -f recorder.log ]; then
-              tail -30 recorder.log
-            fi
-
-            echo "=================================="
-
-            docker ps
-
-            sleep 30
-
-          done
+          node recorder.js
 
       # ==================================================
-      # Upload recording
+      # 12. Upload Recording
       # ==================================================
-
       - name: Upload Recording
         if: always()
         uses: actions/upload-artifact@v4
@@ -521,4 +984,16 @@ jobs:
           name: browser-recording
           path: |
             recording.json
-            recorder.log
+          if-no-files-found: warn
+
+      # ==================================================
+      # 13. Upload Debug Logs
+      # ==================================================
+      - name: Upload Debug Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-debug-logs
+          path: |
+            /tmp/cloudflared.log
+          if-no-files-found: warn
