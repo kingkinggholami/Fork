@@ -1,4 +1,4 @@
-name: اجرای مرورگر با noVNC + ضبط حرکات (X11)
+name: اجرای مرورگر با noVNC + ضبط حرکات (X11 با DISPLAY صحیح)
 
 on:
   workflow_dispatch:
@@ -29,26 +29,36 @@ jobs:
         run: |
           docker exec chromium apk add --no-cache xinput xdotool util-linux
 
-      - name: اجرای اسکریپت ضبط رویدادهای X11 (با نمایش لاگ زنده)
+      - name: پیدا کردن DISPLAY و اجرای ضبط‌کننده
         run: |
-          # ایجاد اسکریپت ضبط داخل کانتینر
+          # دریافت DISPLAY از داخل کانتینر
+          DISPLAY_VAR=$(docker exec chromium sh -c 'echo $DISPLAY')
+          echo "DISPLAY داخل کانتینر: $DISPLAY_VAR"
+          
+          # اگر DISPLAY خالی بود، مقدار پیش‌فرض :99 را امتحان کن
+          if [ -z "$DISPLAY_VAR" ]; then
+            DISPLAY_VAR=":99"
+          fi
+
+          # ایجاد اسکریپت ضبط با DISPLAY مشخص
           docker exec chromium sh -c "
             cat > /tmp/record.sh << 'SCRIPT'
             #!/bin/sh
-            echo '⏳ شروع ضبط رویدادهای X11...' > /tmp/events.log
-            echo '🖥️  نمایش دستگاه‌های ورودی:' >> /tmp/events.log
+            export DISPLAY=$DISPLAY_VAR
+            echo '⏳ شروع ضبط رویدادهای X11 روی DISPLAY='\$DISPLAY > /tmp/events.log
+            echo '🖥️  لیست دستگاه‌های ورودی:' >> /tmp/events.log
             xinput list >> /tmp/events.log 2>&1
+            echo '📡 گوش دادن به رویدادها...' >> /tmp/events.log
 
-            # ضبط رویدادها با xinput و نوشتن در فایل + خروجی استاندارد
+            # ضبط رویدادها با xinput و نوشتن در فایل
             xinput test-xi2 --root 2>&1 | while read line; do
-              # فیلتر رویدادهای مهم (کلیک، کلید، اسکرول)
               case \"\$line\" in
                 *ButtonPress*|*ButtonRelease*|*KeyPress*|*KeyRelease*)
-                  echo \"[\$(date -Iseconds)] X11: \$line\" | tee -a /tmp/events.log
+                  echo \"[\$(date -Iseconds)] X11: \$line\" >> /tmp/events.log
                   ;;
                 *Motion*)
                   # برای کاهش حجم، فقط هر 100 میلی‌ثانیه یکبار ضبط شود (اختیاری)
-                  # echo \"[\$(date -Iseconds)] X11: \$line\" | tee -a /tmp/events.log
+                  # echo \"[\$(date -Iseconds)] X11: \$line\" >> /tmp/events.log
                   ;;
               esac
             done
@@ -56,10 +66,10 @@ jobs:
             chmod +x /tmp/record.sh
           "
 
-          # اجرای اسکریپت در پس‌زمینه با خروجی به کنسول (برای دیدن در لاگ Actions)
-          docker exec -d chromium sh -c "/tmp/record.sh > /proc/1/fd/1 2>&1"
+          # اجرای اسکریپت در پس‌زمینه با خروجی به فایل (و نه به stdout)
+          docker exec -d chromium sh -c "/tmp/record.sh"
 
-          echo "✅ اسکریپت ضبط X11 با موفقیت در کانتینر اجرا شد."
+          echo "✅ اسکریپت ضبط X11 با DISPLAY=$DISPLAY_VAR اجرا شد."
 
       - name: اجرای تونل Cloudflare و نمایش زنده لاگ رویدادها
         run: |
@@ -75,7 +85,7 @@ jobs:
           echo "================================="
           echo "🟢 تونل فعال است. منتظر رویدادها..."
 
-          # نمایش مداوم لاگ رویدادها (هر ۵ ثانیه یکبار)
+          # نمایش مداوم لاگ رویدادها
           while true; do
             echo "📋 آخرین رویدادهای ثبت‌شده (از /tmp/events.log):"
             docker exec chromium tail -n 10 /tmp/events.log 2>/dev/null || echo "(هنوز رویدادی ثبت نشده)"
