@@ -1,4 +1,5 @@
-name: اجرای مرورگر با noVNC + ضبط حرکات (X11)
+```yaml
+name: اجرای Chromium با noVNC + ضبط حرکات X11
 
 on:
   workflow_dispatch:
@@ -9,84 +10,301 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: اجرای کانتینر کروم
+
+      # --------------------------------------------------
+      # 1. اجرای Chromium + noVNC
+      # --------------------------------------------------
+      - name: اجرای کانتینر Chromium
+        shell: bash
         run: |
+          set -e
+
+          docker rm -f chromium 2>/dev/null || true
+
           docker run -d \
             --name chromium \
             --restart unless-stopped \
-            -e VNC_PASS=your_password \
-            -e RESOLUTION=1280x720 \
+            --shm-size=2g \
+            -e VNC_PASSWORD="${{ secrets.VNC_PASSWORD }}" \
+            -e DISPLAY_WIDTH=1280 \
+            -e DISPLAY_HEIGHT=720 \
+            -e INSTALL_PACKAGES="xinput xdotool xdpyinfo" \
             -p 5800:5800 \
             jlesage/chromium:latest
 
+          echo "⏳ منتظر آماده شدن Chromium..."
+
+          for i in {1..60}; do
+            if docker exec chromium sh -c \
+              'DISPLAY=:0 xdpyinfo >/dev/null 2>&1'; then
+              echo "✅ X server آماده است."
+              break
+            fi
+
+            sleep 2
+          done
+
+          docker exec chromium sh -c \
+            'DISPLAY=:0 xdpyinfo >/dev/null 2>&1'
+
+          echo "✅ Chromium/noVNC آماده است."
+
+      # --------------------------------------------------
+      # 2. نصب cloudflared
+      # --------------------------------------------------
       - name: نصب cloudflared
+        shell: bash
         run: |
-          curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
+          set -e
+
+          curl -fsSL \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb \
+            -o cloudflared.deb
+
           sudo dpkg -i cloudflared.deb
 
-      - name: نصب ابزارهای X11 در کانتینر
+          cloudflared --version
+
+      # --------------------------------------------------
+      # 3. ساخت محل لاگ داخل کانتینر
+      # --------------------------------------------------
+      - name: آماده‌سازی ضبط رویدادهای X11
+        shell: bash
         run: |
-          docker exec chromium apk add --no-cache xinput xdotool
+          set -e
 
-      - name: اجرای اسکریپت ضبط رویدادها با DISPLAY=:0
+          docker exec chromium sh -c '
+            mkdir -p /recording
+            touch /recording/events.log
+            chmod 666 /recording/events.log
+          '
+
+          echo "===== X DISPLAY ====="
+          docker exec chromium sh -c \
+            'echo DISPLAY=$DISPLAY; DISPLAY=:0 xdpyinfo | head -20'
+
+          echo
+          echo "===== XINPUT DEVICES ====="
+          docker exec chromium sh -c \
+            'DISPLAY=:0 xinput list'
+
+      # --------------------------------------------------
+      # 4. شروع ضبط رویدادهای Mouse / Keyboard
+      # --------------------------------------------------
+      - name: شروع ضبط رویدادهای X11
+        shell: bash
         run: |
-          docker exec chromium sh -c "
-            cat > /tmp/record.sh << 'SCRIPT'
-            #!/bin/sh
-            export DISPLAY=:0
-            # بررسی در دسترس بودن X server
-            if ! xdpyinfo > /dev/null 2>&1; then
-              echo '❌ X server در دسترس نیست' > /tmp/events.log
-              exit 1
-            fi
-            echo '✅ X server در دسترس است' > /tmp/events.log
-            echo '🖥️  لیست دستگاه‌های ورودی:' >> /tmp/events.log
-            xinput list >> /tmp/events.log 2>&1
+          set -e
 
-            # ضبط رویدادها با xinput
-            xinput test-xi2 --root 2>&1 | while read line; do
-              case \"\$line\" in
-                *ButtonPress*|*ButtonRelease*|*KeyPress*|*KeyRelease*)
-                  echo \"[\$(date -Iseconds)] X11: \$line\" >> /tmp/events.log
-                  ;;
-              esac
-            done
-            SCRIPT
-            chmod +x /tmp/record.sh
-          "
+          docker exec chromium sh -c '
+            cat > /recording/record.sh << "SCRIPT"
+#!/bin/sh
 
-          # اجرای اسکریپت در پس‌زمینه
-          docker exec -d chromium sh -c "/tmp/record.sh"
-          echo "✅ اسکریپت ضبط با DISPLAY=:0 اجرا شد."
+export DISPLAY=:0
 
-      - name: اجرای تونل Cloudflare و نمایش لاگ رویدادها
+LOG=/recording/events.log
+
+echo "========================================" >> "$LOG"
+echo "X11 event recorder started: $(date)" >> "$LOG"
+echo "DISPLAY=$DISPLAY" >> "$LOG"
+echo "========================================" >> "$LOG"
+
+if ! xdpyinfo >/dev/null 2>&1; then
+  echo "ERROR: X server is not available" >> "$LOG"
+  exit 1
+fi
+
+echo "X server: OK" >> "$LOG"
+echo "" >> "$LOG"
+
+echo "===== INPUT DEVICES =====" >> "$LOG"
+xinput list >> "$LOG" 2>&1
+echo "" >> "$LOG"
+
+echo "===== START EVENTS =====" >> "$LOG"
+
+# دریافت تمام رویدادهای XInput2
+xinput test-xi2 --root 2>&1 |
+while IFS= read -r line
+do
+    case "$line" in
+
+        *"EVENT type 2"*|*"EVENT type 3"*)
+            echo "[$(date "+%Y-%m-%dT%H:%M:%S%z")] $line" >> "$LOG"
+            ;;
+
+        *"EVENT type 4"*|*"EVENT type 5"*)
+            echo "[$(date "+%Y-%m-%dT%H:%M:%S%z")] $line" >> "$LOG"
+            ;;
+
+        *"EVENT type 6"*|*"EVENT type 7"*)
+            echo "[$(date "+%Y-%m-%dT%H:%M:%S%z")] $line" >> "$LOG"
+            ;;
+
+        *"EVENT type 8"*|*"EVENT type 9"*)
+            echo "[$(date "+%Y-%m-%dT%H:%M:%S%z")] $line" >> "$LOG"
+            ;;
+
+        *)
+            # سایر خطوط برای دیباگ
+            echo "$line" >> "$LOG"
+            ;;
+    esac
+done
+SCRIPT
+
+            chmod +x /recording/record.sh
+          '
+
+          # اجرای recorder در background
+          docker exec -d chromium \
+            sh -c 'DISPLAY=:0 /recording/record.sh'
+
+          sleep 3
+
+          echo "===== RECORDER STATUS ====="
+
+          docker exec chromium sh -c \
+            'ps | grep "[r]ecord.sh" || true'
+
+          echo
+          echo "===== INITIAL LOG ====="
+
+          docker exec chromium sh -c \
+            'tail -n 30 /recording/events.log'
+
+      # --------------------------------------------------
+      # 5. اجرای Cloudflare Tunnel
+      # --------------------------------------------------
+      - name: اجرای Cloudflare Tunnel
+        shell: bash
         run: |
+          set -e
+
+          rm -f /tmp/cloudflared.log
+
           cloudflared tunnel \
-            --url http://localhost:5800 \
-            --no-autoupdate > /tmp/cloudflared.log 2>&1 &
-          CLOUDFLARE_PID=$!
+            --url http://127.0.0.1:5800 \
+            --no-autoupdate \
+            > /tmp/cloudflared.log 2>&1 &
 
-          sleep 15
+          echo $! > /tmp/cloudflared.pid
 
-          echo "===== آدرس دسترسی به مرورگر ====="
-          grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' /tmp/cloudflared.log
-          echo "================================="
-          echo "🟢 تونل فعال است. منتظر رویدادها..."
+          echo "⏳ منتظر Cloudflare Tunnel..."
 
-          # نمایش مداوم لاگ رویدادها
+          for i in {1..60}; do
+
+            URL=$(grep -oE \
+              'https://[-a-zA-Z0-9]+\.trycloudflare\.com' \
+              /tmp/cloudflared.log \
+              | head -n 1 || true)
+
+            if [ -n "$URL" ]; then
+              break
+            fi
+
+            sleep 2
+          done
+
+          echo
+          echo "=============================================="
+          echo "🌐 آدرس دسترسی به Chromium / noVNC:"
+          echo
+          echo "$URL"
+          echo
+          echo "=============================================="
+
+          if [ -z "$URL" ]; then
+            echo "❌ URL تونل پیدا نشد."
+            cat /tmp/cloudflared.log
+            exit 1
+          fi
+
+      # --------------------------------------------------
+      # 6. مانیتور لاگ رویدادها
+      # --------------------------------------------------
+      - name: مانیتور رویدادهای X11
+        shell: bash
+        run: |
+          set +e
+
+          echo
+          echo "🟢 تونل فعال است."
+          echo "🖱️  Mouse / Keyboard events در حال ضبط هستند."
+          echo
+
           while true; do
-            echo "📋 آخرین رویدادهای ثبت‌شده (از /tmp/events.log):"
-            docker exec chromium tail -n 10 /tmp/events.log 2>/dev/null || echo "(هنوز رویدادی ثبت نشده)"
-            echo "----------------------------------------"
+
+            echo
+            echo "=================================================="
+            echo "📋 آخرین رویدادهای X11"
+            echo "=================================================="
+
+            docker exec chromium sh -c \
+              'tail -n 20 /recording/events.log 2>/dev/null' \
+              || echo "(لاگ هنوز آماده نیست)"
+
+            echo
+            echo "--------------------------------------------------"
+
             sleep 5
           done
 
-      - name: آپلود لاگ‌ها پس از پایان
+      # --------------------------------------------------
+      # 7. گرفتن لاگ‌ها در پایان Job
+      # --------------------------------------------------
+      - name: جمع‌آوری لاگ‌ها
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p artifacts
+
+          echo "===== DOCKER LOG =====" \
+            > artifacts/docker.log
+
+          docker logs chromium \
+            >> artifacts/docker.log 2>&1 || true
+
+          echo "===== X11 EVENTS =====" \
+            > artifacts/events.log
+
+          docker exec chromium sh -c \
+            'cat /recording/events.log' \
+            >> artifacts/events.log 2>&1 || true
+
+          echo "===== XINPUT =====" \
+            > artifacts/xinput.log
+
+          docker exec chromium sh -c \
+            'DISPLAY=:0 xinput list' \
+            >> artifacts/xinput.log 2>&1 || true
+
+          echo "===== DISPLAY =====" \
+            > artifacts/display.log
+
+          docker exec chromium sh -c \
+            'DISPLAY=:0 xdpyinfo' \
+            >> artifacts/display.log 2>&1 || true
+
+          echo "===== CLOUDFLARED =====" \
+            > artifacts/cloudflared.log
+
+          cat /tmp/cloudflared.log \
+            >> artifacts/cloudflared.log 2>&1 || true
+
+          echo
+          echo "===== ARTIFACTS ====="
+          ls -lah artifacts
+
+      # --------------------------------------------------
+      # 8. Upload
+      # --------------------------------------------------
+      - name: آپلود لاگ‌ها
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: logs
-          path: |
-            /tmp/cloudflared.log
-            /tmp/events.log
+          name: chromium-x11-logs
+          path: artifacts/
+          if-no-files-found: warn
           retention-days: 7
+```
