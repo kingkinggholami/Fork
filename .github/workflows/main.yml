@@ -1,4 +1,3 @@
-```yaml
 name: Browser Recorder - noVNC
 
 on:
@@ -1292,4 +1291,3 @@ jobs:
             2>/dev/null || true
 
           echo "✅ Cleanup completed"
-```
