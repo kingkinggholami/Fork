@@ -29,50 +29,39 @@ jobs:
         run: |
           docker exec chromium apk add --no-cache xinput xdotool util-linux
 
-      - name: اجرای اسکریپت ضبط رویدادهای X11
+      - name: اجرای اسکریپت ضبط رویدادهای X11 (با نمایش لاگ زنده)
         run: |
-          docker exec -d chromium sh -c "
-            # ایجاد فایل لاگ
-            touch /tmp/events.log
-            chmod 666 /tmp/events.log
+          # ایجاد اسکریپت ضبط داخل کانتینر
+          docker exec chromium sh -c "
+            cat > /tmp/record.sh << 'SCRIPT'
+            #!/bin/sh
+            echo '⏳ شروع ضبط رویدادهای X11...' > /tmp/events.log
+            echo '🖥️  نمایش دستگاه‌های ورودی:' >> /tmp/events.log
+            xinput list >> /tmp/events.log 2>&1
 
-            # تابعی برای ثبت زمان و نوع رویداد
-            log_event() {
-              echo \"[\$(date -Iseconds)] \$1\" >> /tmp/events.log
-            }
-
-            # ضبط کلیک‌ها با xinput
+            # ضبط رویدادها با xinput و نوشتن در فایل + خروجی استاندارد
             xinput test-xi2 --root 2>&1 | while read line; do
+              # فیلتر رویدادهای مهم (کلیک، کلید، اسکرول)
               case \"\$line\" in
-                *\"ButtonPress\"*)
-                  echo \"[CLICK] \$line\" >> /tmp/events.log
+                *ButtonPress*|*ButtonRelease*|*KeyPress*|*KeyRelease*)
+                  echo \"[\$(date -Iseconds)] X11: \$line\" | tee -a /tmp/events.log
                   ;;
-                *\"KeyPress\"*)
-                  echo \"[KEY] \$line\" >> /tmp/events.log
-                  ;;
-                *\"Motion\"*)
-                  # برای کاهش حجم، فقط هر ۵۰ میلی‌ثانیه یک بار ذخیره شود
-                  # (اختیاری) می‌توانید کامنت کنید تا همه حرکات ماوس ثبت شود
-                  # echo \"[MOVE] \$line\" >> /tmp/events.log
+                *Motion*)
+                  # برای کاهش حجم، فقط هر 100 میلی‌ثانیه یکبار ضبط شود (اختیاری)
+                  # echo \"[\$(date -Iseconds)] X11: \$line\" | tee -a /tmp/events.log
                   ;;
               esac
-            done &
-            XINPUT_PID=\$!
-
-            # ضبط اسکرول با xdotool (تشخیص چرخش ماوس)
-            while true; do
-              # دریافت موقعیت اسکرول با استفاده از xdotool getmouselocation
-              # اما اسکرول رویداد خاصی دارد که با xinput هم قابل دریافت است
-              # برای سادگی، از xinput برای اسکرول هم استفاده میکنیم
-              sleep 1
             done
-
-            wait \$XINPUT_PID
+            SCRIPT
+            chmod +x /tmp/record.sh
           "
 
-          echo "✅ اسکریپت ضبط X11 در کانتینر اجرا شد."
+          # اجرای اسکریپت در پس‌زمینه با خروجی به کنسول (برای دیدن در لاگ Actions)
+          docker exec -d chromium sh -c "/tmp/record.sh > /proc/1/fd/1 2>&1"
 
-      - name: اجرای تونل Cloudflare و نمایش لاگ‌ها
+          echo "✅ اسکریپت ضبط X11 با موفقیت در کانتینر اجرا شد."
+
+      - name: اجرای تونل Cloudflare و نمایش زنده لاگ رویدادها
         run: |
           cloudflared tunnel \
             --url http://localhost:5800 \
@@ -84,15 +73,14 @@ jobs:
           echo "===== آدرس دسترسی به مرورگر ====="
           grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' /tmp/cloudflared.log
           echo "================================="
+          echo "🟢 تونل فعال است. منتظر رویدادها..."
 
-          echo "🟢 تونل فعال است. لاگ رویدادها در حال جمع‌آوری..."
-
-          # نمایش لاگ رویدادها در خروجی (و همچنین لاگ تونل)
+          # نمایش مداوم لاگ رویدادها (هر ۵ ثانیه یکبار)
           while true; do
-            echo "📋 آخرین رویدادهای ثبت‌شده:"
-            docker exec chromium tail -n 5 /tmp/events.log 2>/dev/null || echo "(هنوز رویدادی ثبت نشده)"
+            echo "📋 آخرین رویدادهای ثبت‌شده (از /tmp/events.log):"
+            docker exec chromium tail -n 10 /tmp/events.log 2>/dev/null || echo "(هنوز رویدادی ثبت نشده)"
             echo "----------------------------------------"
-            sleep 30
+            sleep 5
           done
 
       - name: آپلود لاگ‌ها پس از پایان (اختیاری)
