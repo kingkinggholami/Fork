@@ -1,3 +1,4 @@
+
 name: Browser Recorder - noVNC
 
 on:
@@ -16,71 +17,113 @@ jobs:
 
     steps:
 
-      # --------------------------------------------------
-      # 1. اجرای Chromium + noVNC
-      # --------------------------------------------------
+      # ==================================================
+      # 1. اجرای Chromium + noVNC + CDP
+      # ==================================================
+
       - name: Start Chromium
         run: |
           docker run -d \
             --name chromium \
             --restart unless-stopped \
-            -e VNC_PASS=your_password \
-            -e RESOLUTION=1280x720 \
-            -e CHROME_CLI="--remote-debugging-port=9222 --remote-debugging-address=0.0.0.0" \
+            -e VNC_PASSWORD=your_password \
+            -e DISPLAY_WIDTH=1280 \
+            -e DISPLAY_HEIGHT=720 \
+            -e CHROMIUM_REMOTE_DEBUGGING=1 \
+            -e CHROMIUM_REMOTE_DEBUGGING_PORT=9222 \
+            -e KEEP_APP_RUNNING=1 \
             -p 5800:5800 \
             -p 9222:9222 \
             jlesage/chromium:latest
 
-      # --------------------------------------------------
-      # 2. نصب Node.js
-      # --------------------------------------------------
+      # ==================================================
+      # 2. بررسی وضعیت کانتینر
+      # ==================================================
+
+      - name: Check Chromium
+        run: |
+          echo "⏳ منتظر Chromium..."
+
+          for i in {1..60}; do
+
+            if curl -fs http://127.0.0.1:5800 > /dev/null 2>&1; then
+              echo "✅ noVNC آماده است"
+              break
+            fi
+
+            echo "⏳ تلاش $i/60"
+            sleep 2
+
+          done
+
+          echo ""
+          echo "========== DOCKER =========="
+          docker ps
+          echo "============================"
+
+          echo ""
+          echo "========== LOGS ============"
+          docker logs --tail 100 chromium || true
+          echo "============================"
+
+      # ==================================================
+      # 3. صبر برای CDP
+      # ==================================================
+
+      - name: Wait for Chrome DevTools
+        run: |
+          echo "⏳ منتظر Chrome DevTools Protocol..."
+
+          for i in {1..60}; do
+
+            if curl -fs http://127.0.0.1:9222/json/version > /tmp/cdp.json 2>/dev/null; then
+
+              echo "✅ CDP آماده است"
+              echo ""
+
+              cat /tmp/cdp.json
+
+              break
+            fi
+
+            echo "⏳ CDP هنوز آماده نیست... $i/60"
+            sleep 2
+
+          done
+
+          echo ""
+
+          if ! curl -fs http://127.0.0.1:9222/json/version > /dev/null 2>&1; then
+            echo "❌ CDP بالا نیامد"
+            echo ""
+            echo "========== Chromium logs =========="
+            docker logs --tail 200 chromium || true
+            echo "==================================="
+            exit 1
+          fi
+
+      # ==================================================
+      # 4. نصب Node.js
+      # ==================================================
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
 
-      # --------------------------------------------------
-      # 3. نصب Playwright
-      # --------------------------------------------------
+      # ==================================================
+      # 5. نصب Playwright
+      # ==================================================
+
       - name: Install Playwright
         run: |
           npm init -y
           npm install playwright
 
-      # --------------------------------------------------
-      # 4. صبر برای آماده شدن Chromium
-      # --------------------------------------------------
-      - name: Wait for Chromium
-        run: |
-          echo "⏳ منتظر Chromium..."
-
-          for i in {1..60}; do
-            if curl -s http://127.0.0.1:9222/json/version > /dev/null; then
-              echo "✅ Chromium آماده است"
-              break
-            fi
-
-            sleep 2
-          done
-
-      # --------------------------------------------------
-      # 5. باز کردن سایت
-      # --------------------------------------------------
-      - name: Open Website
-        run: |
-          WEBSITE="${{ inputs.website }}"
-
-          echo "🌐 Website:"
-          echo "$WEBSITE"
-
-          curl -s \
-            -X PUT \
-            "http://127.0.0.1:9222/json/new?${WEBSITE}" \
-            || true
-
-      # --------------------------------------------------
+      # ==================================================
       # 6. ساخت Recorder
-      # --------------------------------------------------
+      # ==================================================
+
       - name: Create Recorder
         run: |
 
@@ -93,11 +136,6 @@ jobs:
 
           let actions = [];
 
-          /*
-           * فقط اطلاعات لازم برای Replay ذخیره می‌شود.
-           * Timestamp عمداً ذخیره نمی‌شود.
-           */
-
           function save() {
             fs.writeFileSync(
               OUTPUT,
@@ -105,7 +143,8 @@ jobs:
             );
           }
 
-          function addAction(action) {
+          function record(action) {
+
             actions.push(action);
 
             console.log(
@@ -116,180 +155,126 @@ jobs:
             save();
           }
 
-          async function selectorFor(page, element) {
-            return await element.evaluate((el) => {
+          async function main() {
 
-              if (!el) return null;
+            console.log("");
+            console.log("================================");
+            console.log("🎥 RECORDER STARTING");
+            console.log("================================");
+            console.log("");
 
-              // ID
-              if (el.id) {
-                return "#" + CSS.escape(el.id);
+            const browser =
+              await chromium.connectOverCDP(
+                "http://127.0.0.1:9222"
+              );
+
+            console.log("✅ Connected to Chromium");
+            console.log("");
+
+            const contexts =
+              browser.contexts();
+
+            for (const context of contexts) {
+
+              for (const page of context.pages()) {
+
+                installRecorder(page);
+
               }
 
-              // name
-              if (el.getAttribute("name")) {
-                return `${el.tagName.toLowerCase()}[name="${CSS.escape(el.getAttribute("name"))}"]`;
-              }
+              context.on("page", page => {
 
-              // data-testid
-              if (el.getAttribute("data-testid")) {
-                return `[data-testid="${CSS.escape(el.getAttribute("data-testid"))}"]`;
-              }
+                installRecorder(page);
 
-              // fallback
-              const parts = [];
+              });
 
-              let current = el;
+            }
 
-              while (
-                current &&
-                current.nodeType === Node.ELEMENT_NODE &&
-                parts.length < 5
-              ) {
+            console.log("================================");
+            console.log("🟢 RECORDER ACTIVE");
+            console.log("================================");
+            console.log("");
+            console.log("👤 حالا وارد noVNC شو.");
+            console.log("🖱️ کلیک‌ها ثبت می‌شوند.");
+            console.log("⌨️ تایپ‌ها ثبت می‌شوند.");
+            console.log("📜 اسکرول‌ها ثبت می‌شوند.");
+            console.log("🌐 Navigation ثبت می‌شود.");
+            console.log("⏱️ زمان ذخیره نمی‌شود.");
+            console.log("");
 
-                let part = current.tagName.toLowerCase();
+            save();
 
-                if (current.classList.length) {
-                  part += "." + [...current.classList]
-                    .slice(0, 2)
-                    .map(x => CSS.escape(x))
-                    .join(".");
-                }
+            await new Promise(() => {});
 
-                const parent = current.parentElement;
-
-                if (parent) {
-                  const siblings = [...parent.children]
-                    .filter(x => x.tagName === current.tagName);
-
-                  if (siblings.length > 1) {
-                    part += `:nth-of-type(${siblings.indexOf(current) + 1})`;
-                  }
-                }
-
-                parts.unshift(part);
-
-                current = current.parentElement;
-              }
-
-              return parts.join(" > ");
-
-            });
           }
 
           async function installRecorder(page) {
 
-            console.log("📄 Recorder attached:", page.url());
-
-            /*
-             * Click
-             */
-
-            await page.exposeFunction(
-              "__recordClick",
-              async (data) => {
-
-                addAction({
-                  type: "click",
-                  selector: data.selector,
-                  x: data.x,
-                  y: data.y
-                });
-
-              }
+            console.log(
+              "📄 Recorder attached:",
+              page.url()
             );
 
-            /*
-             * Input / typing
-             */
-
             await page.exposeFunction(
-              "__recordInput",
-              async (data) => {
+              "__recordAction",
+              data => {
 
-                let value = data.value;
-
-                if (data.password) {
-                  value = "******";
-                }
-
-                addAction({
-                  type: "type",
-                  selector: data.selector,
-                  value
-                });
-
-              }
-            );
-
-            /*
-             * Scroll
-             */
-
-            await page.exposeFunction(
-              "__recordScroll",
-              async (data) => {
-
-                addAction({
-                  type: "scroll",
-                  x: data.x,
-                  y: data.y
-                });
-
-              }
-            );
-
-            /*
-             * Navigation
-             */
-
-            await page.exposeFunction(
-              "__recordNavigation",
-              async (url) => {
-
-                addAction({
-                  type: "navigation",
-                  url
-                });
+                record(data);
 
               }
             );
 
             await page.addInitScript(() => {
 
-              /*
-               * CLICK
-               */
+              function getSelector(el) {
+
+                if (!el) {
+                  return null;
+                }
+
+                if (el.id) {
+                  return "#" + CSS.escape(el.id);
+                }
+
+                if (el.name) {
+                  return (
+                    el.tagName.toLowerCase() +
+                    '[name="' +
+                    CSS.escape(el.name) +
+                    '"]'
+                  );
+                }
+
+                if (el.getAttribute("data-testid")) {
+                  return (
+                    '[data-testid="' +
+                    CSS.escape(
+                      el.getAttribute("data-testid")
+                    ) +
+                    '"]'
+                  );
+                }
+
+                return el.tagName.toLowerCase();
+
+              }
+
+              // ================================
+              // CLICK
+              // ================================
 
               document.addEventListener(
                 "click",
-                async (event) => {
+                event => {
 
-                  const element = event.target;
+                  const el = event.target;
 
-                  if (!element) return;
+                  window.__recordAction({
 
-                  let selector = null;
+                    type: "click",
 
-                  if (element.id) {
-
-                    selector = "#" + CSS.escape(element.id);
-
-                  } else if (element.getAttribute("name")) {
-
-                    selector =
-                      `${element.tagName.toLowerCase()}[name="${CSS.escape(element.getAttribute("name"))}"]`;
-
-                  } else {
-
-                    selector =
-                      element.tagName.toLowerCase();
-
-                  }
-
-                  await window.__recordClick({
-
-                    selector,
+                    selector:
+                      getSelector(el),
 
                     x: event.clientX,
 
@@ -301,51 +286,40 @@ jobs:
                 true
               );
 
-              /*
-               * TYPE
-               */
+              // ================================
+              // INPUT / TYPE
+              // ================================
 
               document.addEventListener(
                 "input",
-                async (event) => {
+                event => {
 
-                  const element = event.target;
+                  const el = event.target;
 
-                  if (!element) return;
+                  if (!el) {
+                    return;
+                  }
 
                   if (
-                    element instanceof HTMLInputElement ||
-                    element instanceof HTMLTextAreaElement ||
-                    element instanceof HTMLSelectElement
+                    el instanceof HTMLInputElement ||
+                    el instanceof HTMLTextAreaElement ||
+                    el instanceof HTMLSelectElement
                   ) {
 
-                    let selector = null;
+                    const password =
+                      el.type === "password";
 
-                    if (element.id) {
+                    window.__recordAction({
 
-                      selector =
-                        "#" + CSS.escape(element.id);
+                      type: "type",
 
-                    } else if (element.name) {
+                      selector:
+                        getSelector(el),
 
-                      selector =
-                        `${element.tagName.toLowerCase()}[name="${CSS.escape(element.name)}"]`;
-
-                    } else {
-
-                      selector =
-                        element.tagName.toLowerCase();
-
-                    }
-
-                    await window.__recordInput({
-
-                      selector,
-
-                      value: element.value,
-
-                      password:
-                        element.type === "password"
+                      value:
+                        password
+                          ? "******"
+                          : el.value
 
                     });
 
@@ -355,28 +329,35 @@ jobs:
                 true
               );
 
-              /*
-               * SCROLL
-               */
+              // ================================
+              // SCROLL
+              // ================================
 
+              let lastX = window.scrollX;
               let lastY = window.scrollY;
 
               window.addEventListener(
                 "scroll",
-                async () => {
+                () => {
 
+                  const x = window.scrollX;
                   const y = window.scrollY;
 
-                  if (Math.abs(y - lastY) < 50) {
+                  if (
+                    Math.abs(x - lastX) < 50 &&
+                    Math.abs(y - lastY) < 50
+                  ) {
                     return;
                   }
 
+                  lastX = x;
                   lastY = y;
 
-                  await window.__recordScroll({
+                  window.__recordAction({
 
-                    x: window.scrollX,
+                    type: "scroll",
 
+                    x,
                     y
 
                   });
@@ -389,100 +370,25 @@ jobs:
 
             });
 
-            /*
-             * Navigation
-             */
-
             page.on(
               "framenavigated",
               frame => {
 
-                if (frame === page.mainFrame()) {
+                if (
+                  frame === page.mainFrame()
+                ) {
 
-                  addAction({
+                  record({
+
                     type: "navigation",
+
                     url: frame.url()
+
                   });
 
                 }
 
               }
-            );
-
-          }
-
-          async function main() {
-
-            console.log("================================");
-            console.log("🎥 RECORDER STARTING");
-            console.log("================================");
-
-            const browser =
-              await chromium.connectOverCDP(
-                "http://127.0.0.1:9222"
-              );
-
-            const contexts =
-              browser.contexts();
-
-            for (const context of contexts) {
-
-              const pages =
-                context.pages();
-
-              for (const page of pages) {
-
-                await installRecorder(page);
-
-              }
-
-              context.on(
-                "page",
-                async page => {
-
-                  await installRecorder(page);
-
-                }
-              );
-
-            }
-
-            console.log("");
-            console.log("🟢 RECORDER ACTIVE");
-            console.log("🟢 حالا وارد مرورگر شو و کارهایت را انجام بده.");
-            console.log("");
-            console.log("📌 کلیک، تایپ، اسکرول و Navigation ثبت می‌شوند.");
-            console.log("📌 زمان ذخیره نمی‌شود.");
-            console.log("");
-
-            /*
-             * زنده نگه داشتن Recorder
-             */
-
-            process.on(
-              "SIGINT",
-              () => {
-
-                save();
-
-                process.exit(0);
-
-              }
-            );
-
-            process.on(
-              "SIGTERM",
-              () => {
-
-                save();
-
-                process.exit(0);
-
-              }
-            );
-
-            await new Promise(
-              () => {}
             );
 
           }
@@ -497,19 +403,34 @@ jobs:
 
           EOF
 
-      # --------------------------------------------------
+      # ==================================================
       # 7. اجرای Recorder
-      # --------------------------------------------------
+      # ==================================================
+
       - name: Start Recorder
         run: |
           node recorder.js
 
-      # --------------------------------------------------
-      # 8. ذخیره recording.json
-      # --------------------------------------------------
+      # ==================================================
+      # 8. آپلود recording
+      # ==================================================
+
       - name: Upload Recording
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: browser-recording
           path: recording.json
+
+      # ==================================================
+      # 9. نگه داشتن Workflow
+      # ==================================================
+
+      - name: Keep Browser Alive
+        if: always()
+        run: |
+          while true; do
+            echo "🟢 Browser is running..."
+            docker ps
+            sleep 60
+          done
