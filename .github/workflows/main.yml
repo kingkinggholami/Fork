@@ -1,4 +1,4 @@
-name: اجرای مرورگر با noVNC + ضبط حرکات (X11 با DISPLAY=:0)
+name: 运行 Chromium 浏览器 (noVNC + 远程调试)
 
 on:
   workflow_dispatch:
@@ -9,86 +9,146 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: اجرای کانتینر کروم
+      - name: 启动 Chromium 容器 (启用远程调试)
         run: |
           docker run -d \
             --name chromium \
             --restart unless-stopped \
             -e VNC_PASS=your_password \
             -e RESOLUTION=1280x720 \
+            -e CHROMIUM_REMOTE_DEBUGGING=1 \
+            -e CHROMIUM_REMOTE_DEBUGGING_PORT=9222 \
             -p 5800:5800 \
-            -p 5900:5900 \
+            -p 9222:9222 \
             jlesage/chromium:latest
 
-      - name: نصب cloudflared
+      - name: 安装 cloudflared
         run: |
           curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
           sudo dpkg -i cloudflared.deb
 
-      - name: نصب ابزارهای ضبط X11 در کانتینر
+      - name: 安装 Puppeteer
         run: |
-          docker exec chromium apk add --no-cache xinput xdotool util-linux
+          npm init -y
+          npm install puppeteer-core
 
-      - name: اجرای اسکریپت ضبط با DISPLAY=:0
+      - name: 创建录制脚本
         run: |
-          docker exec chromium sh -c "
-            cat > /tmp/record.sh << 'SCRIPT'
-            #!/bin/sh
-            export DISPLAY=:0
-            echo '⏳ شروع ضبط روی DISPLAY='\$DISPLAY > /tmp/events.log
-            echo '🖥️  لیست دستگاه‌های ورودی:' >> /tmp/events.log
-            xinput list >> /tmp/events.log 2>&1
-            echo '📡 گوش دادن به رویدادها...' >> /tmp/events.log
+          cat > recorder.js << 'EOF'
+          const puppeteer = require('puppeteer-core');
 
-            # ضبط رویدادها با xinput و نوشتن در فایل
-            xinput test-xi2 --root 2>&1 | while read line; do
-              case \"\$line\" in
-                *ButtonPress*|*ButtonRelease*|*KeyPress*|*KeyRelease*)
-                  echo \"[\$(date -Iseconds)] X11: \$line\" >> /tmp/events.log
-                  ;;
-                *Motion*)
-                  # برای کاهش حجم، فقط هر 100 میلی‌ثانیه یکبار ضبط شود (اختیاری)
-                  # echo \"[\$(date -Iseconds)] X11: \$line\" >> /tmp/events.log
-                  ;;
-              esac
-            done
-            SCRIPT
-            chmod +x /tmp/record.sh
-          "
+          async function connectWithRetry() {
+            let attempts = 0;
+            while (attempts < 30) {
+              try {
+                const browser = await puppeteer.connect({
+                  browserURL: 'http://localhost:9222',
+                  defaultViewport: null,
+                });
+                return browser;
+              } catch (e) {
+                attempts++;
+                console.log(`⏳ 等待调试器准备就绪 (尝试 ${attempts}/30)...`);
+                await new Promise(r => setTimeout(r, 2000));
+              }
+            }
+            throw new Error('无法连接到 Chromium 调试器');
+          }
 
-          # اجرای اسکریپت در پس‌زمینه با خروجی به فایل
-          docker exec -d chromium sh -c "/tmp/record.sh"
+          (async () => {
+            console.log('🔄 正在连接 Chromium 调试器...');
+            const browser = await connectWithRetry();
+            console.log('✅ 连接成功！');
 
-          echo "✅ اسکریپت ضبط با DISPLAY=:0 اجرا شد."
+            function setupPage(page) {
+              page.evaluateOnNewDocument(() => {
+                const logEvent = (type, data) => {
+                  console.log(JSON.stringify({ type, data, time: Date.now() }));
+                };
 
-      - name: اجرای تونل Cloudflare و نمایش زنده لاگ رویدادها
+                document.addEventListener('click', (e) => {
+                  logEvent('click', {
+                    tag: e.target.tagName,
+                    id: e.target.id || '',
+                    class: e.target.className || '',
+                    x: e.clientX,
+                    y: e.clientY,
+                  });
+                }, true);
+
+                document.addEventListener('keydown', (e) => {
+                  logEvent('keydown', {
+                    key: e.key,
+                    code: e.code,
+                    target: e.target.tagName,
+                    value: e.target.value || '',
+                  });
+                }, true);
+
+                document.addEventListener('scroll', (e) => {
+                  logEvent('scroll', {
+                    target: e.target.tagName,
+                    scrollTop: e.target.scrollTop || 0,
+                    scrollLeft: e.target.scrollLeft || 0,
+                    pageXOffset: window.pageXOffset || 0,
+                    pageYOffset: window.pageYOffset || 0,
+                  });
+                }, true);
+              });
+
+              page.on('console', (msg) => {
+                if (msg.type() === 'log') {
+                  const text = msg.text();
+                  try {
+                    const event = JSON.parse(text);
+                    console.log(`[${event.type}]`, JSON.stringify(event.data));
+                  } catch (e) {}
+                }
+              });
+            }
+
+            const pages = await browser.pages();
+            for (const page of pages) {
+              await setupPage(page);
+            }
+
+            browser.on('targetcreated', async (target) => {
+              if (target.type() === 'page') {
+                const page = await target.page();
+                if (page) {
+                  await setupPage(page);
+                }
+              }
+            });
+
+            console.log('🟢 录制器已启动，所有操作将被记录。');
+            await new Promise(() => {});
+          })();
+          EOF
+
+      - name: 运行录制器和 Cloudflare Tunnel
         run: |
+          echo "⏳ 等待 Chromium 启动..."
+          sleep 15
+
+          node recorder.js &
+          RECORDER_PID=$!
+
+          sleep 10
+
           cloudflared tunnel \
             --url http://localhost:5800 \
             --no-autoupdate > /tmp/cloudflared.log 2>&1 &
           CLOUDFLARE_PID=$!
 
-          sleep 15
+          sleep 10
 
-          echo "===== آدرس دسترسی به مرورگر ====="
-          grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' /tmp/cloudflared.log
-          echo "================================="
-          echo "🟢 تونل فعال است. منتظر رویدادها..."
+          echo "===== Cloudflare 访问地址 ====="
+          grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' /tmp/cloudflared.log || echo "⚠️ 未找到地址，请检查日志"
+          echo "================================"
 
-          # نمایش مداوم لاگ رویدادها
           while true; do
-            echo "📋 آخرین رویدادهای ثبت‌شده (از /tmp/events.log):"
-            docker exec chromium tail -n 10 /tmp/events.log 2>/dev/null || echo "(هنوز رویدادی ثبت نشده)"
-            echo "----------------------------------------"
-            sleep 5
+            echo "🟢 所有服务运行中..."
+            docker ps
+            sleep 60
           done
-
-      - name: آپلود لاگ‌ها پس از پایان (اختیاری)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: logs
-          path: |
-            /tmp/cloudflared.log
-            /tmp/events.log
-          retention-days: 7
