@@ -1,4 +1,4 @@
-name: اجرای مرورگر با noVNC + ضبط حرکات
+name: اجرای مرورگر با noVNC + ضبط حرکات (نسخه نهایی)
 
 on:
   workflow_dispatch:
@@ -9,14 +9,23 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: اجرای کانتینر کروم با دیباگ
+      - name: اجرای کانتینر کروم با تنظیمات دیباگ از طریق فایل
         run: |
+          # ایجاد فایل تنظیمات برای کروم
+          cat > /tmp/chromium-flags.conf << 'EOF'
+          --remote-debugging-port=9222
+          --remote-debugging-address=0.0.0.0
+          --no-sandbox
+          --disable-dev-shm-usage
+          --disable-gpu
+          EOF
+
           docker run -d \
             --name chromium \
             --restart unless-stopped \
             -e VNC_PASS=your_password \
             -e RESOLUTION=1280x720 \
-            -e CHROMIUM_OPTS="--remote-debugging-port=9222 --remote-debugging-address=0.0.0.0 --no-sandbox" \
+            -v /tmp/chromium-flags.conf:/config/chromium-flags.conf:ro \
             -p 5800:5800 \
             -p 9222:9222 \
             jlesage/chromium:latest
@@ -26,29 +35,30 @@ jobs:
           curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
           sudo dpkg -i cloudflared.deb
 
-      - name: نصب ابزارهای مورد نیاز و بررسی پورت دیباگ
-        run: |
-          echo "⏳ منتظر آماده شدن کانتینر..."
-          sleep 20
-          echo "🔍 بررسی پورت 9222..."
-          # نصب net-tools داخل کانتینر
-          docker exec chromium apk add --no-cache net-tools 2>/dev/null || true
-          docker exec chromium netstat -tulpn | grep 9222 || echo "⚠️ پورت 9222 باز نیست!"
-          docker exec chromium ps aux | grep chromium || echo "⚠️ فرآیند کروم پیدا نشد!"
-
-      - name: نصب Node.js و puppeteer-core
+      - name: نصب ابزارهای مورد نیاز
         run: |
           npm init -y
           npm install puppeteer-core
 
-      - name: ایجاد اسکریپت ضبط حرکات (با بازیابی خودکار)
+      - name: ایجاد اسکریپت ضبط حرکات (نسخه بهبودیافته)
         run: |
           cat > recorder.js << 'EOF'
           const puppeteer = require('puppeteer-core');
+          const fs = require('fs');
+          const path = require('path');
+
+          // ایجاد فایل لاگ برای ذخیره رویدادها
+          const logFile = fs.createWriteStream('/tmp/events.log', { flags: 'a' });
+
+          function logEvent(type, data) {
+            const entry = JSON.stringify({ type, data, timestamp: Date.now() }) + '\n';
+            console.log(entry.trim());
+            logFile.write(entry);
+          }
 
           async function connectWithRetry() {
             let attempts = 0;
-            while (attempts < 30) {
+            while (attempts < 60) {
               try {
                 const browser = await puppeteer.connect({
                   browserURL: 'http://localhost:9222',
@@ -57,8 +67,8 @@ jobs:
                 return browser;
               } catch (e) {
                 attempts++;
-                console.log(`⏳ در انتظار دیباگر (تلاش ${attempts}/۳۰)...`);
-                await new Promise(r => setTimeout(r, 3000));
+                console.log(`⏳ در انتظار دیباگر (تلاش ${attempts}/۶۰)...`);
+                await new Promise(r => setTimeout(r, 2000));
               }
             }
             throw new Error('امکان اتصال به دیباگر وجود ندارد');
@@ -68,86 +78,169 @@ jobs:
             console.log('🔄 اتصال به دیباگر کروم...');
             const browser = await connectWithRetry();
             console.log('✅ اتصال برقرار شد');
+            
+            // دریافت اطلاعات نسخه
+            const version = await browser.version();
+            logEvent('browser_info', { version });
 
             function setupPage(page) {
               page.evaluateOnNewDocument(() => {
                 const logEvent = (type, data) => {
                   console.log(JSON.stringify({ type, data, time: Date.now() }));
                 };
+
+                // ثبت کلیک
                 document.addEventListener('click', (e) => {
+                  let target = e.target;
+                  let selector = '';
+                  if (target.id) {
+                    selector = '#' + target.id;
+                  } else if (target.className) {
+                    selector = '.' + target.className.split(' ').join('.');
+                  } else {
+                    selector = target.tagName.toLowerCase();
+                  }
+                  
                   logEvent('click', {
-                    tag: e.target.tagName,
-                    id: e.target.id || '',
-                    class: e.target.className || '',
+                    tag: target.tagName,
+                    selector: selector,
+                    id: target.id || '',
+                    class: target.className || '',
                     x: e.clientX,
                     y: e.clientY,
                     path: e.composedPath ? e.composedPath().slice(0, 5).map(el => el.tagName).join(' > ') : '',
+                    href: target.href || '',
+                    text: target.textContent ? target.textContent.slice(0, 50) : ''
                   });
                 }, true);
+
+                // ثبت تایپ
                 document.addEventListener('keydown', (e) => {
                   logEvent('keydown', {
                     key: e.key,
                     code: e.code,
                     target: e.target.tagName,
                     value: e.target.value || '',
+                    type: e.target.type || '',
+                    id: e.target.id || '',
+                    name: e.target.name || ''
                   });
                 }, true);
+
+                // ثبت اسکرول
                 document.addEventListener('scroll', (e) => {
+                  const target = e.target;
                   logEvent('scroll', {
-                    target: e.target.tagName,
-                    scrollTop: e.target.scrollTop || 0,
-                    scrollLeft: e.target.scrollLeft || 0,
+                    target: target.tagName,
+                    scrollTop: target.scrollTop || 0,
+                    scrollLeft: target.scrollLeft || 0,
                     pageXOffset: window.pageXOffset || 0,
                     pageYOffset: window.pageYOffset || 0,
+                    innerHeight: window.innerHeight,
+                    innerWidth: window.innerWidth
+                  });
+                }, true);
+
+                // ثبت تغییرات input
+                document.addEventListener('input', (e) => {
+                  logEvent('input', {
+                    target: e.target.tagName,
+                    value: e.target.value || '',
+                    type: e.target.type || '',
+                    id: e.target.id || '',
+                    name: e.target.name || ''
                   });
                 }, true);
               });
 
+              // شنود کنسول
               page.on('console', (msg) => {
                 if (msg.type() === 'log') {
                   const text = msg.text();
                   try {
                     const event = JSON.parse(text);
-                    console.log(`[${event.type}]`, JSON.stringify(event.data));
-                  } catch (e) { /* ignore */ }
+                    logEvent(event.type, event.data);
+                  } catch (e) {
+                    // لاگ‌های غیر JSON
+                    if (text.startsWith('{')) {
+                      logFile.write('RAW: ' + text + '\n');
+                    }
+                  }
                 }
+              });
+
+              // شنود خطاها
+              page.on('error', (error) => {
+                logEvent('page_error', { message: error.message });
               });
             }
 
+            // تنظیم صفحات موجود
             const pages = await browser.pages();
-            for (const page of pages) await setupPage(page);
+            for (const page of pages) {
+              await setupPage(page);
+            }
 
+            // تنظیم صفحات جدید
             browser.on('targetcreated', async (target) => {
               if (target.type() === 'page') {
                 const page = await target.page();
-                if (page) await setupPage(page);
+                if (page) {
+                  await setupPage(page);
+                  logEvent('new_page', { url: page.url() });
+                }
               }
             });
 
-            console.log('🟢 ضبط‌کننده فعال است.');
+            console.log('🟢 ضبط‌کننده فعال است. تمام حرکات در /tmp/events.log ذخیره می‌شود.');
+            console.log('📝 آدرس صفحه اول: ' + (await pages[0]?.url() || 'about:blank'));
+            
+            // نگه‌داری اسکریپت
             await new Promise(() => {});
           })();
           EOF
 
       - name: اجرای ضبط‌کننده و تونل
         run: |
+          echo "⏳ منتظر آماده شدن کروم..."
+          sleep 20
+
+          # اجرای ضبط‌کننده
           node recorder.js &
           RECORDER_PID=$!
-          sleep 5
+          sleep 10
 
+          # اجرای تونل
           cloudflared tunnel \
             --url http://localhost:5800 \
             --no-autoupdate > /tmp/cloudflared.log 2>&1 &
           CLOUDFLARE_PID=$!
 
-          sleep 10
-          echo "===== آدرس دسترسی ====="
-          grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' /tmp/cloudflared.log || echo "⚠️ آدرس پیدا نشد"
-          echo "======================="
+          sleep 15
 
-          tail -f /tmp/cloudflared.log &
+          echo "===== آدرس دسترسی به مرورگر ====="
+          grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' /tmp/cloudflared.log || echo "⚠️ آدرس پیدا نشد"
+          echo "================================="
+
+          echo "📁 لاگ رویدادها در: /tmp/events.log"
+          echo "🟢 همه سرویس‌ها فعال هستند."
+
+          # نمایش لاگ‌ها در پس‌زمینه
+          tail -f /tmp/events.log /tmp/cloudflared.log &
+
+          # حلقه نگه‌داری
           while true; do
-            echo "💚 سرویس‌ها فعال هستند..."
+            echo "💚 مرورگر و تونل و ضبط‌کننده در حال اجرا..."
             docker ps
             sleep 60
           done
+
+      - name: آپلود لاگ رویدادها (پس از اتمام)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: events-log
+          path: |
+            /tmp/events.log
+            /tmp/cloudflared.log
+          retention-days: 7
