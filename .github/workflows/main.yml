@@ -1,4 +1,4 @@
-name: اجرای مرورگر با noVNC + ضبط حرکات (نسخه نهایی)
+name: اجرای مرورگر با noVNC + ضبط حرکات (X11)
 
 on:
   workflow_dispatch:
@@ -9,25 +9,15 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: اجرای کانتینر کروم با تنظیمات دیباگ از طریق فایل
+      - name: اجرای کانتینر کروم
         run: |
-          # ایجاد فایل تنظیمات برای کروم
-          cat > /tmp/chromium-flags.conf << 'EOF'
-          --remote-debugging-port=9222
-          --remote-debugging-address=0.0.0.0
-          --no-sandbox
-          --disable-dev-shm-usage
-          --disable-gpu
-          EOF
-
           docker run -d \
             --name chromium \
             --restart unless-stopped \
             -e VNC_PASS=your_password \
             -e RESOLUTION=1280x720 \
-            -v /tmp/chromium-flags.conf:/config/chromium-flags.conf:ro \
             -p 5800:5800 \
-            -p 9222:9222 \
+            -p 5900:5900 \
             jlesage/chromium:latest
 
       - name: نصب cloudflared
@@ -35,182 +25,55 @@ jobs:
           curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
           sudo dpkg -i cloudflared.deb
 
-      - name: نصب ابزارهای مورد نیاز
+      - name: نصب ابزارهای ضبط X11 در کانتینر
         run: |
-          npm init -y
-          npm install puppeteer-core
+          docker exec chromium apk add --no-cache xinput xdotool util-linux
 
-      - name: ایجاد اسکریپت ضبط حرکات (نسخه بهبودیافته)
+      - name: اجرای اسکریپت ضبط رویدادهای X11
         run: |
-          cat > recorder.js << 'EOF'
-          const puppeteer = require('puppeteer-core');
-          const fs = require('fs');
-          const path = require('path');
+          docker exec -d chromium sh -c "
+            # ایجاد فایل لاگ
+            touch /tmp/events.log
+            chmod 666 /tmp/events.log
 
-          // ایجاد فایل لاگ برای ذخیره رویدادها
-          const logFile = fs.createWriteStream('/tmp/events.log', { flags: 'a' });
-
-          function logEvent(type, data) {
-            const entry = JSON.stringify({ type, data, timestamp: Date.now() }) + '\n';
-            console.log(entry.trim());
-            logFile.write(entry);
-          }
-
-          async function connectWithRetry() {
-            let attempts = 0;
-            while (attempts < 60) {
-              try {
-                const browser = await puppeteer.connect({
-                  browserURL: 'http://localhost:9222',
-                  defaultViewport: null,
-                });
-                return browser;
-              } catch (e) {
-                attempts++;
-                console.log(`⏳ در انتظار دیباگر (تلاش ${attempts}/۶۰)...`);
-                await new Promise(r => setTimeout(r, 2000));
-              }
-            }
-            throw new Error('امکان اتصال به دیباگر وجود ندارد');
-          }
-
-          (async () => {
-            console.log('🔄 اتصال به دیباگر کروم...');
-            const browser = await connectWithRetry();
-            console.log('✅ اتصال برقرار شد');
-            
-            // دریافت اطلاعات نسخه
-            const version = await browser.version();
-            logEvent('browser_info', { version });
-
-            function setupPage(page) {
-              page.evaluateOnNewDocument(() => {
-                const logEvent = (type, data) => {
-                  console.log(JSON.stringify({ type, data, time: Date.now() }));
-                };
-
-                // ثبت کلیک
-                document.addEventListener('click', (e) => {
-                  let target = e.target;
-                  let selector = '';
-                  if (target.id) {
-                    selector = '#' + target.id;
-                  } else if (target.className) {
-                    selector = '.' + target.className.split(' ').join('.');
-                  } else {
-                    selector = target.tagName.toLowerCase();
-                  }
-                  
-                  logEvent('click', {
-                    tag: target.tagName,
-                    selector: selector,
-                    id: target.id || '',
-                    class: target.className || '',
-                    x: e.clientX,
-                    y: e.clientY,
-                    path: e.composedPath ? e.composedPath().slice(0, 5).map(el => el.tagName).join(' > ') : '',
-                    href: target.href || '',
-                    text: target.textContent ? target.textContent.slice(0, 50) : ''
-                  });
-                }, true);
-
-                // ثبت تایپ
-                document.addEventListener('keydown', (e) => {
-                  logEvent('keydown', {
-                    key: e.key,
-                    code: e.code,
-                    target: e.target.tagName,
-                    value: e.target.value || '',
-                    type: e.target.type || '',
-                    id: e.target.id || '',
-                    name: e.target.name || ''
-                  });
-                }, true);
-
-                // ثبت اسکرول
-                document.addEventListener('scroll', (e) => {
-                  const target = e.target;
-                  logEvent('scroll', {
-                    target: target.tagName,
-                    scrollTop: target.scrollTop || 0,
-                    scrollLeft: target.scrollLeft || 0,
-                    pageXOffset: window.pageXOffset || 0,
-                    pageYOffset: window.pageYOffset || 0,
-                    innerHeight: window.innerHeight,
-                    innerWidth: window.innerWidth
-                  });
-                }, true);
-
-                // ثبت تغییرات input
-                document.addEventListener('input', (e) => {
-                  logEvent('input', {
-                    target: e.target.tagName,
-                    value: e.target.value || '',
-                    type: e.target.type || '',
-                    id: e.target.id || '',
-                    name: e.target.name || ''
-                  });
-                }, true);
-              });
-
-              // شنود کنسول
-              page.on('console', (msg) => {
-                if (msg.type() === 'log') {
-                  const text = msg.text();
-                  try {
-                    const event = JSON.parse(text);
-                    logEvent(event.type, event.data);
-                  } catch (e) {
-                    // لاگ‌های غیر JSON
-                    if (text.startsWith('{')) {
-                      logFile.write('RAW: ' + text + '\n');
-                    }
-                  }
-                }
-              });
-
-              // شنود خطاها
-              page.on('error', (error) => {
-                logEvent('page_error', { message: error.message });
-              });
+            # تابعی برای ثبت زمان و نوع رویداد
+            log_event() {
+              echo \"[\$(date -Iseconds)] \$1\" >> /tmp/events.log
             }
 
-            // تنظیم صفحات موجود
-            const pages = await browser.pages();
-            for (const page of pages) {
-              await setupPage(page);
-            }
+            # ضبط کلیک‌ها با xinput
+            xinput test-xi2 --root 2>&1 | while read line; do
+              case \"\$line\" in
+                *\"ButtonPress\"*)
+                  echo \"[CLICK] \$line\" >> /tmp/events.log
+                  ;;
+                *\"KeyPress\"*)
+                  echo \"[KEY] \$line\" >> /tmp/events.log
+                  ;;
+                *\"Motion\"*)
+                  # برای کاهش حجم، فقط هر ۵۰ میلی‌ثانیه یک بار ذخیره شود
+                  # (اختیاری) می‌توانید کامنت کنید تا همه حرکات ماوس ثبت شود
+                  # echo \"[MOVE] \$line\" >> /tmp/events.log
+                  ;;
+              esac
+            done &
+            XINPUT_PID=\$!
 
-            // تنظیم صفحات جدید
-            browser.on('targetcreated', async (target) => {
-              if (target.type() === 'page') {
-                const page = await target.page();
-                if (page) {
-                  await setupPage(page);
-                  logEvent('new_page', { url: page.url() });
-                }
-              }
-            });
+            # ضبط اسکرول با xdotool (تشخیص چرخش ماوس)
+            while true; do
+              # دریافت موقعیت اسکرول با استفاده از xdotool getmouselocation
+              # اما اسکرول رویداد خاصی دارد که با xinput هم قابل دریافت است
+              # برای سادگی، از xinput برای اسکرول هم استفاده میکنیم
+              sleep 1
+            done
 
-            console.log('🟢 ضبط‌کننده فعال است. تمام حرکات در /tmp/events.log ذخیره می‌شود.');
-            console.log('📝 آدرس صفحه اول: ' + (await pages[0]?.url() || 'about:blank'));
-            
-            // نگه‌داری اسکریپت
-            await new Promise(() => {});
-          })();
-          EOF
+            wait \$XINPUT_PID
+          "
 
-      - name: اجرای ضبط‌کننده و تونل
+          echo "✅ اسکریپت ضبط X11 در کانتینر اجرا شد."
+
+      - name: اجرای تونل Cloudflare و نمایش لاگ‌ها
         run: |
-          echo "⏳ منتظر آماده شدن کروم..."
-          sleep 20
-
-          # اجرای ضبط‌کننده
-          node recorder.js &
-          RECORDER_PID=$!
-          sleep 10
-
-          # اجرای تونل
           cloudflared tunnel \
             --url http://localhost:5800 \
             --no-autoupdate > /tmp/cloudflared.log 2>&1 &
@@ -219,28 +82,25 @@ jobs:
           sleep 15
 
           echo "===== آدرس دسترسی به مرورگر ====="
-          grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' /tmp/cloudflared.log || echo "⚠️ آدرس پیدا نشد"
+          grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' /tmp/cloudflared.log
           echo "================================="
 
-          echo "📁 لاگ رویدادها در: /tmp/events.log"
-          echo "🟢 همه سرویس‌ها فعال هستند."
+          echo "🟢 تونل فعال است. لاگ رویدادها در حال جمع‌آوری..."
 
-          # نمایش لاگ‌ها در پس‌زمینه
-          tail -f /tmp/events.log /tmp/cloudflared.log &
-
-          # حلقه نگه‌داری
+          # نمایش لاگ رویدادها در خروجی (و همچنین لاگ تونل)
           while true; do
-            echo "💚 مرورگر و تونل و ضبط‌کننده در حال اجرا..."
-            docker ps
-            sleep 60
+            echo "📋 آخرین رویدادهای ثبت‌شده:"
+            docker exec chromium tail -n 5 /tmp/events.log 2>/dev/null || echo "(هنوز رویدادی ثبت نشده)"
+            echo "----------------------------------------"
+            sleep 30
           done
 
-      - name: آپلود لاگ رویدادها (پس از اتمام)
+      - name: آپلود لاگ‌ها پس از پایان (اختیاری)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: events-log
+          name: logs
           path: |
-            /tmp/events.log
             /tmp/cloudflared.log
+            /tmp/events.log
           retention-days: 7
