@@ -1,70 +1,26 @@
-name: اجرای دو مرورگر با noVNC و Cloudflare Tunnel
+name: Two Chromium Mirror - noVNC + Cloudflare
 
 on:
   workflow_dispatch:
+    inputs:
+      site_url:
+        description: "آدرس سایتی که هر دو Chromium باز کنند"
+        required: true
+        default: "https://google.com"
+        type: string
 
 jobs:
 
-  chrome-1:
-    runs-on: ubuntu-latest
-    timeout-minutes: 360
-
-    steps:
-      - name: اجرای Chromium شماره 1
-        run: |
-          docker run -d \
-            --name chromium \
-            --restart unless-stopped \
-            -e VNC_PASS=your_password \
-            -e RESOLUTION=1280x720 \
-            -p 5800:5800 \
-            jlesage/chromium:latest
-
-      - name: نصب cloudflared
-        run: |
-          curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb \
-            -o cloudflared.deb
-          sudo dpkg -i cloudflared.deb
-
-      - name: اجرای تونل Chromium شماره 1
-        run: |
-          echo "⏳ منتظر آماده شدن Chromium..."
-          sleep 15
-
-          while ! nc -z localhost 5800; do
-            echo "⏳ پورت 5800 آماده نیست..."
-            sleep 2
-          done
-
-          echo "✅ Chromium شماره 1 آماده است"
-
-          cloudflared tunnel \
-            --url http://localhost:5800 \
-            --no-autoupdate > /tmp/cloudflared.log 2>&1 &
-
-          sleep 10
-
-          echo "================================"
-          echo "🌐 CHROMIUM 1 CLOUDFLARE URL"
-          echo "================================"
-
-          grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' \
-            /tmp/cloudflared.log || true
-
-          echo "================================"
-
-          while true; do
-            echo "🟢 Chromium شماره 1 فعال است..."
-            docker ps
-            sleep 60
-          done
-
+  # ============================================================
+  # RUNNER 2
+  # ============================================================
 
   chrome-2:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
     steps:
+
       - name: اجرای Chromium شماره 2
         run: |
           docker run -d \
@@ -72,44 +28,193 @@ jobs:
             --restart unless-stopped \
             -e VNC_PASS=your_password \
             -e RESOLUTION=1280x720 \
+            -e CHROMIUM_URL="${{ inputs.site_url }}" \
             -p 5800:5800 \
             jlesage/chromium:latest
 
-      - name: نصب cloudflared
+      # --------------------------------------------------------
+      # نصب Cloudflared
+      # --------------------------------------------------------
+
+      - name: نصب Cloudflared
         run: |
-          curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb \
+          curl -L \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb \
             -o cloudflared.deb
+
           sudo dpkg -i cloudflared.deb
 
-      - name: اجرای تونل Chromium شماره 2
-        run: |
-          echo "⏳ منتظر آماده شدن Chromium..."
-          sleep 15
+      # --------------------------------------------------------
+      # اجرای Tunnel
+      # --------------------------------------------------------
 
-          while ! nc -z localhost 5800; do
-            echo "⏳ پورت 5800 آماده نیست..."
+      - name: اجرای Cloudflare Tunnel شماره 2
+        run: |
+          echo "⏳ منتظر آماده شدن Chromium شماره 2..."
+
+          for i in $(seq 1 60); do
+            if nc -z 127.0.0.1 5800; then
+              echo "✅ پورت 5800 آماده است"
+              break
+            fi
+
             sleep 2
           done
 
-          echo "✅ Chromium شماره 2 آماده است"
+          cloudflared tunnel \
+            --url http://127.0.0.1:5800 \
+            --no-autoupdate \
+            > /tmp/cloudflared2.log 2>&1 &
+
+      # --------------------------------------------------------
+      # دریافت URL
+      # --------------------------------------------------------
+
+      - name: نمایش URL شماره 2
+        shell: bash
+        run: |
+          echo "⏳ منتظر URL Cloudflare..."
+
+          URL=""
+
+          for i in $(seq 1 60); do
+
+            URL=$(grep -oE \
+              'https://[-a-zA-Z0-9]+\.trycloudflare\.com' \
+              /tmp/cloudflared2.log \
+              | head -n 1 || true)
+
+            if [ -n "$URL" ]; then
+              break
+            fi
+
+            sleep 2
+          done
+
+          echo
+          echo "=============================================="
+          echo "🌐 CHROMIUM 2"
+          echo "$URL"
+          echo "=============================================="
+          echo
+
+      # --------------------------------------------------------
+      # نگه داشتن Runner
+      # --------------------------------------------------------
+
+      - name: نگه داشتن Runner 2
+        run: |
+          while true; do
+            echo "🟢 Runner 2 فعال است"
+            docker ps
+            sleep 60
+          done
+
+
+  # ============================================================
+  # RUNNER 1
+  # ============================================================
+
+  chrome-1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+
+      # --------------------------------------------------------
+      # اجرای Chromium شماره 1
+      # --------------------------------------------------------
+
+      - name: اجرای Chromium شماره 1
+        run: |
+          docker run -d \
+            --name chromium \
+            --restart unless-stopped \
+            -e VNC_PASS=your_password \
+            -e RESOLUTION=1280x720 \
+            -e CHROMIUM_URL="${{ inputs.site_url }}" \
+            -p 5800:5800 \
+            jlesage/chromium:latest
+
+      # --------------------------------------------------------
+      # نصب Cloudflared
+      # --------------------------------------------------------
+
+      - name: نصب Cloudflared
+        run: |
+          curl -L \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb \
+            -o cloudflared.deb
+
+          sudo dpkg -i cloudflared.deb
+
+      # --------------------------------------------------------
+      # اجرای Tunnel
+      # --------------------------------------------------------
+
+      - name: اجرای Cloudflare Tunnel شماره 1
+        run: |
+          echo "⏳ منتظر آماده شدن Chromium شماره 1..."
+
+          for i in $(seq 1 60); do
+            if nc -z 127.0.0.1 5800; then
+              echo "✅ پورت 5800 آماده است"
+              break
+            fi
+
+            sleep 2
+          done
 
           cloudflared tunnel \
-            --url http://localhost:5800 \
-            --no-autoupdate > /tmp/cloudflared.log 2>&1 &
+            --url http://127.0.0.1:5800 \
+            --no-autoupdate \
+            > /tmp/cloudflared1.log 2>&1 &
 
-          sleep 10
+      # --------------------------------------------------------
+      # دریافت URL
+      # --------------------------------------------------------
 
-          echo "================================"
-          echo "🌐 CHROMIUM 2 CLOUDFLARE URL"
-          echo "================================"
+      - name: نمایش URL شماره 1
+        shell: bash
+        run: |
+          echo "⏳ منتظر URL Cloudflare..."
 
-          grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' \
-            /tmp/cloudflared.log || true
+          URL=""
 
-          echo "================================"
+          for i in $(seq 1 60); do
 
+            URL=$(grep -oE \
+              'https://[-a-zA-Z0-9]+\.trycloudflare\.com' \
+              /tmp/cloudflared1.log \
+              | head -n 1 || true)
+
+            if [ -n "$URL" ]; then
+              break
+            fi
+
+            sleep 2
+          done
+
+          echo
+          echo "=============================================="
+          echo "🌐 CHROMIUM 1"
+          echo "$URL"
+          echo "=============================================="
+          echo
+
+          echo
+          echo "🌐 سایت انتخاب شده:"
+          echo "${{ inputs.site_url }}"
+          echo
+
+      # --------------------------------------------------------
+      # نگه داشتن Runner
+      # --------------------------------------------------------
+
+      - name: نگه داشتن Runner 1
+        run: |
           while true; do
-            echo "🟢 Chromium شماره 2 فعال است..."
+            echo "🟢 Runner 1 فعال است"
             docker ps
             sleep 60
           done
